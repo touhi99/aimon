@@ -1,0 +1,4 @@
+target/
+app/.build/
+AIMon.app/
+.DS_Store
