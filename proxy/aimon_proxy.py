@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional AI Project Monitor proxy: track an app's AI usage by changing only its base URL. Standard library only.
+"""Optional AI Monitor proxy: track an app's AI usage by changing only its base URL. Standard library only.
 
     python3 aimon_proxy.py                 # listens on 127.0.0.1:8787
 
@@ -10,7 +10,7 @@ Point an app at  http://127.0.0.1:8787/p/<project>/<provider>  instead of the pr
     Ollama:  http://127.0.0.1:8787/p/my-app/ollama      LM Studio: http://127.0.0.1:8787/p/my-app/lmstudio/v1
 
 Requests are forwarded unchanged, API keys included, and answers are streamed back as they arrive. The token counts
-in each answer become one line in AI Project Monitor's inbox (proxy.jsonl). Keys, headers and bodies are never stored or logged.
+in each answer become one line in AI Monitor's inbox (proxy.jsonl). Keys, headers and bodies are never stored or logged.
 OpenAI-style streams only carry usage when the app asks for it (stream_options: {"include_usage": true}).
 Add or change providers with  --upstream name=https://host  (repeatable).
 """
@@ -128,7 +128,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="AI Project Monitor usage proxy")
+    ap = argparse.ArgumentParser(description="AI Monitor usage proxy")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--upstream", action="append", default=[], metavar="NAME=URL")
     a = ap.parse_args()
@@ -136,7 +136,7 @@ def main():
         name, _, url = item.partition("="); UPSTREAMS[name] = url.rstrip("/")
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)   # this machine only
     srv.daemon_threads = True
-    print(f"AI Project Monitor proxy on http://127.0.0.1:{a.port}  (Ctrl-C to stop)", flush=True)
+    print(f"AI Monitor proxy on http://127.0.0.1:{a.port}  (Ctrl-C to stop)", flush=True)
     try: srv.serve_forever()
     except KeyboardInterrupt: pass
 

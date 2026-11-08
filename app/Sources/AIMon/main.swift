@@ -26,11 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateBar() {
         guard let b = item.button else { return }
-        guard let s = store.snap else { b.title = "AI Project Monitor"; return }
+        guard let s = store.snap else { b.title = "AI Monitor"; return }
         if s.limits.source == "none" || s.limits.source == "off" {   // plan limits off or no Claude plan found: show money (or tokens) instead of an empty ring
             let f = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             b.image = nil
-            b.attributedTitle = NSAttributedString(string: s.api.today >= 0.005 ? Fmt.money(s.api.today) : "AI Project Monitor", attributes: [.font: f])
+            b.attributedTitle = NSAttributedString(string: s.api.today >= 0.005 ? Fmt.money(s.api.today) : "AI Monitor", attributes: [.font: f])
             b.toolTip = "API spend today: \(Fmt.money(s.api.today))"
             return
         }

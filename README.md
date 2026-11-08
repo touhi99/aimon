@@ -5,7 +5,7 @@ A macOS menu bar app for monitoring AI tooling on a Mac: model usage and cost, C
 <p align="center">
 <picture>
 <source media="(prefers-color-scheme: dark)" srcset="docs/popover-dark.png">
-<img src="docs/popover-light.png" alt="The AI Project Monitor popover" width="420">
+<img src="docs/popover-light.png" alt="The AI Monitor popover" width="420">
 </picture>
 </p>
 
@@ -38,21 +38,21 @@ Usage is stored in a local SQLite database, `~/Library/Application Support/aimon
 git clone <repository-url>
 cd aimon
 ./build.sh        # builds the Rust core and the Swift app into AIMon.app
-./install.sh      # installs a LaunchAgent: starts AI Project Monitor now and at login
+./install.sh      # installs a LaunchAgent: starts AI Monitor now and at login
 ```
 
-`./uninstall.sh` stops AI Project Monitor and removes the LaunchAgent. The data folder is left in place.
+`./uninstall.sh` stops AI Monitor and removes the LaunchAgent. The data folder is left in place.
 Only one instance runs at a time; a second launch exits immediately.
 
-## What AI Project Monitor reads and sends
+## What AI Monitor reads and sends
 
 - **Claude Code logs**: model name, token counts, timestamp and working folder of each call. Prompts and responses are not read.
 - **Claude plan limits** (off by default): enable with the button in the popover or `aimon config claude_limits on`.
-  When enabled, AI Project Monitor reads the Claude Code login token from the macOS Keychain and sends it to
+  When enabled, AI Monitor reads the Claude Code login token from the macOS Keychain and sends it to
   `api.anthropic.com/api/oauth/usage`, an undocumented endpoint that may change. macOS asks for permission to read the Keychain item;
-  if it is refused or missing, AI Project Monitor does not ask again for a day. Disable with `aimon config claude_limits off`.
+  if it is refused or missing, AI Monitor does not ask again for a day. Disable with `aimon config claude_limits off`.
 - **Ollama cloud spend** (off by default): enable with the button in the popover or `aimon config ollama on`.
-  When enabled, and if `ollama signin` was run, AI Project Monitor signs a request to `ollama.com/api/usage` with the key in `~/.ollama/id_ed25519`.
+  When enabled, and if `ollama signin` was run, AI Monitor signs a request to `ollama.com/api/usage` with the key in `~/.ollama/id_ed25519`.
   The key is used locally for signing and is not transmitted. This endpoint is also undocumented.
 - **Network tab**: lists outbound connections per process using `nettop` and `lsof`. Nothing is sent anywhere.
 

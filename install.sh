@@ -8,4 +8,4 @@ mkdir -p ~/Library/LaunchAgents
 sed "s#__AIMON_DIR__#$PWD#" dev.aimon.app.plist.template > "$DEST"
 launchctl bootout gui/$(id -u)/dev.aimon.app 2>/dev/null || true
 launchctl bootstrap gui/$(id -u) "$DEST"
-echo "AI Project Monitor is running and will start at login."
+echo "AI Monitor is running and will start at login."
