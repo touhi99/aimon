@@ -3,12 +3,12 @@
 A macOS menu bar app for monitoring AI tooling on a Mac: model usage and cost, Claude Code sessions and tool calls, and network traffic per process. It is meant for tracking cost, usage and traffic across different projects in a personal toolkit.
 
 <p align="center">
-<img src="docs/popover-dark.png" alt="The AI Project Monitor popover" width="420">
+<img src="docs/popover-dark.png" alt="The Usage tab" width="420">
 </p>
 
 ## Features
 
-The popover has three tabs.
+There are three tabs.
 
 - **Usage**: token counts and estimated API cost per project and per model, a daily and monthly spend chart, and Claude plan limits (5-hour session and weekly percentage). Optionally, Ollama cloud spend. Local models are counted as tokens only.
 - **Trace**: Claude Code activity from its session logs. Tool calls in the last 24 hours with counts and failures, recent failures with the command or file involved, and recent sessions with duration, model calls, tool calls and failures.
@@ -44,11 +44,11 @@ Only one instance runs at a time; a second launch exits immediately.
 ## What AI Project Monitor reads and sends
 
 - **Claude Code logs**: model name, token counts, timestamp and working folder of each call. Prompts and responses are not read.
-- **Claude plan limits** (off by default): enable with the button in the popover or `aimon config claude_limits on`.
+- **Claude plan limits** (off by default): enable with the button in the Usage tab or `aimon config claude_limits on`.
   When enabled, AI Project Monitor reads the Claude Code login token from the macOS Keychain and sends it to
   `api.anthropic.com/api/oauth/usage`, an undocumented endpoint that may change. macOS asks for permission to read the Keychain item;
   if it is refused or missing, AI Project Monitor does not ask again for a day. Disable with `aimon config claude_limits off`.
-- **Ollama cloud spend** (off by default): enable with the button in the popover or `aimon config ollama on`.
+- **Ollama cloud spend** (off by default): enable with the button in the Usage tab or `aimon config ollama on`.
   When enabled, and if `ollama signin` was run, AI Project Monitor signs a request to `ollama.com/api/usage` with the key in `~/.ollama/id_ed25519`.
   The key is used locally for signing and is not transmitted. This endpoint is also undocumented.
 - **Network tab**: lists outbound connections per process using `nettop` and `lsof`. Nothing is sent anywhere.
@@ -66,7 +66,3 @@ Other tools and applications append one JSON line per model call to a file in `~
 - [docs/inbox.md](docs/inbox.md): fields, `aimon log`, folder grouping and prices
 - [docs/proxy.md](docs/proxy.md): optional proxy for applications whose code cannot be changed (experimental)
 - [docs/development.md](docs/development.md): checking totals and regenerating screenshots
-
-## License
-
-MIT. See `LICENSE`.
