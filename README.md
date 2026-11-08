@@ -3,10 +3,7 @@
 A macOS menu bar app for monitoring AI tooling on a Mac: model usage and cost, Claude Code sessions and tool calls, and network traffic per process. It is meant for tracking cost, usage and traffic across different projects in a personal toolkit.
 
 <p align="center">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="docs/popover-dark.png">
 <img src="docs/popover-light.png" alt="The AI Project Monitor popover" width="420">
-</picture>
 </p>
 
 ## Features
