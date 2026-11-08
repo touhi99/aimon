@@ -382,7 +382,7 @@ struct PopoverView: View {
     func networkTab() -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let n = store.net {
-                title("Outbound · 24h", trailing: "bytes since AI Monitor started sampling")
+                title("Outbound · 24h", trailing: "bytes since AI Project Monitor started sampling")
                 if n.procs.isEmpty { Text("Nothing sampled yet.").font(.system(size: 12)).foregroundStyle(.secondary) }
                 ForEach(n.procs) { p in
                     VStack(alignment: .leading, spacing: 3) {

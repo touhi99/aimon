@@ -12,7 +12,7 @@ cat > $APP/Contents/Info.plist <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>AI Monitor</string>
+<key>CFBundleName</key><string>AI Project Monitor</string>
 <key>CFBundleIdentifier</key><string>dev.aimon.app</string>
 <key>CFBundleExecutable</key><string>AIMon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
