@@ -21,7 +21,7 @@ struct PopoverView: View {
     @State private var hoverDay: Date?
     @State private var hoverHour: Date?
     @State private var hoverOllama: Date?
-    @State private var tab = 0
+    @State private var tab = Int(ProcessInfo.processInfo.environment["AIMON_TAB"] ?? "") ?? 0   // first tab shown; set for screenshots
     @State private var contentH: CGFloat = 400
     // leave room for the menu bar, the tab picker, the footer and padding
     private var maxScrollHeight: CGFloat { max(300, (NSScreen.main?.visibleFrame.height ?? 800) - 170) }
@@ -32,13 +32,14 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 20) {
             if let s = store.snap {
                 Picker("", selection: $tab) {
-                    Text("Usage").tag(0); Text("Trace").tag(1); Text("Network").tag(2)
+                    Text("Usage").tag(0); Text("Trace").tag(1); Text("Network").tag(2); Text("Projects").tag(3)
                 }.pickerStyle(.segmented).labelsHidden()
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 20) {
                         switch tab {
                         case 1: traceTab()
                         case 2: networkTab()
+                        case 3: projectsTab()
                         default:
                             limits(s)
                             ollamaPlan(s)
@@ -418,6 +419,58 @@ struct PopoverView: View {
                 Text("Sampling connections…").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
             }
         }
+    }
+
+    // MARK: Projects
+    func chooseProjects() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.prompt = "Choose"
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let u = panel.url { store.setProjects(u.path) }
+    }
+    func projectsTab() -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let d = store.projects, let root = d.root {
+                HStack {
+                    title("Projects", trailing: (root as NSString).abbreviatingWithTildeInPath)
+                    Button("Change") { chooseProjects() }.buttonStyle(.borderless).font(.system(size: 10))
+                }
+                if d.projects.isEmpty { Text("No git repositories in this folder.").font(.system(size: 12)).foregroundStyle(.secondary) }
+                ForEach(d.projects) { p in projectRow(p) }
+                Text("Services are LaunchAgents with KeepAlive whose program or working directory is inside the repository. Ports are those its processes listen on.").font(.system(size: 10)).foregroundStyle(.tertiary)
+            } else if store.projects != nil {
+                title("Projects")
+                Text("Lists the git repositories in a folder: whether their LaunchAgents run, the ports they listen on, and unpushed or uncommitted work.").font(.system(size: 11)).foregroundStyle(.secondary)
+                Button("Choose folder…") { chooseProjects() }.font(.system(size: 11))
+            } else {
+                Text("Reading projects…").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
+            }
+        }
+    }
+    func projectRow(_ p: ProjRow) -> some View {
+        let agents = p.running + p.down.count
+        var service = agents > 0 ? "\(p.running)/\(agents) running" : ""
+        if !p.ports.isEmpty { service += (service.isEmpty ? "" : "  ") + p.ports.map { ":\($0)" }.joined(separator: " ") }
+        let git: (String, Color) = !p.remote ? ("no remote", .orange)
+            : !p.upstream ? ("branch not pushed", .orange)
+            : p.ahead > 0 ? ("↑ \(p.ahead) unpushed", .orange)
+            : p.changed > 0 ? ("\(p.changed) changed", .secondary)
+            : ("✓ pushed", .secondary)
+        let extra = p.remote && (p.ahead > 0 || !p.upstream) && p.changed > 0 ? " · \(p.changed) changed" : ""
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Circle().fill(!p.down.isEmpty ? Color.red : service.isEmpty ? Color.gray.opacity(0.4) : Color.green).frame(width: 7, height: 7)
+                Text(p.name).font(.system(size: 12, weight: .medium)).lineLimit(1).frame(width: 120, alignment: .leading)
+                Text(service.isEmpty ? "no service" : service).font(.system(size: 11)).monospacedDigit()
+                    .foregroundStyle(service.isEmpty ? .tertiary : .secondary).lineLimit(1).truncationMode(.tail)
+                Spacer()
+                Text(git.0 + extra).font(.system(size: 11)).foregroundStyle(git.1).lineLimit(1)
+            }
+            if !p.down.isEmpty {
+                Text("stopped: " + p.down.joined(separator: ", ")).font(.system(size: 10)).foregroundStyle(.red).padding(.leading, 15)
+            }
+        }.help(p.path)
     }
 
     func footer(_ s: Snapshot) -> some View {

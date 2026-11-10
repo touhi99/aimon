@@ -30,8 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if s.limits.source == "none" || s.limits.source == "off" {   // plan limits off or no Claude plan found: show money (or tokens) instead of an empty ring
             let f = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             b.image = nil
-            b.attributedTitle = NSAttributedString(string: s.api.today >= 0.005 ? Fmt.money(s.api.today) : "AI Monitor", attributes: [.font: f])
-            b.toolTip = "API spend today: \(Fmt.money(s.api.today))"
+            let t = NSMutableAttributedString(string: s.api.today >= 0.005 ? Fmt.money(s.api.today) : "AI Monitor", attributes: [.font: f])
+            markStopped(t, f)
+            b.attributedTitle = t
+            b.toolTip = "API spend today: \(Fmt.money(s.api.today))" + stoppedNote
             return
         }
         let ses = s.limits.session?.pct ?? 0, wk = s.limits.weekly?.pct ?? 0
@@ -47,8 +49,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if s.api.today >= 0.005 {
             out.append(NSAttributedString(string: "  " + Fmt.money(s.api.today), attributes: [.font: font, .foregroundColor: NSColor.systemOrange]))
         }
+        markStopped(out, font)
         b.attributedTitle = out
-        b.toolTip = "Claude Pro: \(Int(ses.rounded()))% of the 5-hour session used, \(Int(wk.rounded()))% of the week.\nAPI spend today: \(Fmt.money(s.api.today))"
+        b.toolTip = "Claude Pro: \(Int(ses.rounded()))% of the 5-hour session used, \(Int(wk.rounded()))% of the week.\nAPI spend today: \(Fmt.money(s.api.today))" + stoppedNote
+    }
+
+    /// LaunchAgents of the listed projects that should be running and are not.
+    private var stopped: [String] { store.projects?.projects.flatMap { $0.down } ?? [] }
+    private var stoppedNote: String { stopped.isEmpty ? "" : "\nStopped: " + stopped.joined(separator: ", ") }
+    private func markStopped(_ t: NSMutableAttributedString, _ font: NSFont) {
+        if !stopped.isEmpty { t.append(NSAttributedString(string: "  ●", attributes: [.font: font, .foregroundColor: NSColor.systemRed])) }
     }
 
     @objc func toggle() {

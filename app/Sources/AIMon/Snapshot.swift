@@ -77,6 +77,13 @@ struct NetProc: Codable, Identifiable {
     var id: String { name }
 }
 struct NetData: Codable { var procs: [NetProc] }
+struct ProjRow: Codable, Identifiable {
+    var name: String; var path: String
+    var running: Int; var down: [String]; var ports: [Int]
+    var remote: Bool; var upstream: Bool; var ahead: Int; var changed: Int
+    var id: String { path }
+}
+struct ProjData: Codable { var root: String?; var projects: [ProjRow] }
 
 enum Fmt {
     static func bytes(_ n: Int) -> String {
@@ -130,6 +137,7 @@ final class Store: ObservableObject {
     @Published var month: MonthView?
     @Published var trace: TraceData?
     @Published var net: NetData?
+    @Published var projects: ProjData?
     var onChange: (() -> Void)?
     private var timer: Timer?
 
@@ -143,6 +151,15 @@ final class Store: ObservableObject {
         let bin = binary
         Task.detached {
             _ = Store.run(bin, ["config", key, "on"])
+            await MainActor.run { self.refresh() }
+        }
+    }
+
+    /// Sets the folder whose git repositories the Projects tab lists, then reloads.
+    func setProjects(_ folder: String) {
+        let bin = binary
+        Task.detached {
+            _ = Store.run(bin, ["config", "projects", folder])
             await MainActor.run { self.refresh() }
         }
     }
@@ -201,6 +218,8 @@ final class Store: ObservableObject {
             } catch {
                 await MainActor.run { self.error = "\(error)"; self.onChange?() }
             }
+            let p = Store.run(bin, ["projects"]).flatMap { try? JSONDecoder().decode(ProjData.self, from: $0) }
+            await MainActor.run { if let p { self.projects = p; self.onChange?() } }
             // sequential on purpose: every run scans logs and writes the same database
             let n = Store.run(bin, ["net"]).flatMap { try? JSONDecoder().decode(NetData.self, from: $0) }
             let t = Store.run(bin, ["trace"]).flatMap { try? JSONDecoder().decode(TraceData.self, from: $0) }

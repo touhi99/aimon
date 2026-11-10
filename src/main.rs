@@ -223,6 +223,7 @@ fn option_on(key: &str) -> bool {
         .map_or(false, |v| v[key].as_bool().unwrap_or(false))
 }
 fn config_cmd(a: &[String]) {
+    if a.get(2).map(String::as_str) == Some("projects") { projects_config(a.get(3)); return; }
     let (Some(k), Some(v)) = (a.get(2), a.get(3)) else { eprintln!("usage: aimon config <claude_limits|ollama> <on|off>"); return };
     if !["claude_limits", "ollama"].contains(&k.as_str()) || !["on", "off"].contains(&v.as_str()) { eprintln!("usage: aimon config <claude_limits|ollama> <on|off>"); return; }
     let path = data_dir().join("config.json");
@@ -647,9 +648,103 @@ fn net_report(c: &Connection) {
     println!("{}", json!({"procs": procs.into_iter().take(12).collect::<Vec<_>>(), "since": now - 86400}));
 }
 
+/// `aimon config projects <folder|off>`: the folder whose git repositories the Projects tab lists.
+fn projects_config(v: Option<&String>) {
+    let Some(v) = v else { eprintln!("usage: aimon config projects <folder|off>"); return };
+    let path = data_dir().join("config.json");
+    let mut cfg = fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| v.is_object()).unwrap_or(serde_json::json!({}));
+    if v == "off" { cfg.as_object_mut().unwrap().remove("projects"); } else {
+        let Ok(dir) = fs::canonicalize(v) else { eprintln!("not a folder: {v}"); return };
+        cfg["projects"] = serde_json::json!(dir.to_string_lossy());
+    }
+    fs::write(&path, cfg.to_string()).ok();
+    println!("projects is {v}");
+}
+
+/// Standard output of a command, empty when it cannot run.
+fn out_of(cmd: &str, args: &[&str]) -> String {
+    std::process::Command::new(cmd).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
+}
+
+/// Git repositories at most `depth` folders below `dir`. Does not look inside a repository.
+fn find_repos(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
+    if dir.join(".git").exists() { out.push(dir.to_path_buf()); return; }
+    if depth == 0 { return; }
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !e.path().is_dir() || name.starts_with('.') || name == "node_modules" || name == "target" { continue; }
+        find_repos(&e.path(), depth - 1, out);
+    }
+}
+
+/// State of each git repository under the configured folder: LaunchAgents that belong to it and whether
+/// they run, TCP ports its processes listen on, and unpushed or uncommitted work. Read-only.
+fn projects_report() {
+    let root = fs::read_to_string(data_dir().join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["projects"].as_str().map(PathBuf::from));
+    let Some(root) = root else { println!("{}", serde_json::json!({"root": null, "projects": []})); return };
+    let mut repos = vec![];
+    find_repos(&root, 2, &mut repos);
+    let owner = |p: &str| repos.iter().position(|r| !p.is_empty() && Path::new(p).starts_with(r));
+
+    // LaunchAgents with KeepAlive: (running, labels that are not running) per repository
+    let mut agents: HashMap<usize, (i64, Vec<String>)> = HashMap::new();
+    let listed = out_of("launchctl", &["list"]);
+    let pids: HashMap<&str, &str> = listed.lines().filter_map(|l| { let mut f = l.split('\t'); let pid = f.next()?; f.next()?; Some((f.next()?, pid)) }).collect();
+    if let Ok(rd) = fs::read_dir(home().join("Library/LaunchAgents")) {
+        for e in rd.flatten() {
+            if e.path().extension().map_or(true, |x| x != "plist") { continue; }
+            let Ok(d) = serde_json::from_str::<Value>(&out_of("plutil", &["-convert", "json", "-o", "-", &e.path().to_string_lossy()])) else { continue };
+            let Some(label) = d["Label"].as_str() else { continue };
+            if d["KeepAlive"].is_null() || d["KeepAlive"] == false { continue; }   // scheduled jobs are idle most of the time
+            let prog = d["ProgramArguments"][0].as_str().or(d["Program"].as_str()).unwrap_or("");
+            let Some(i) = owner(d["WorkingDirectory"].as_str().unwrap_or("")).or_else(|| owner(prog)) else { continue };
+            let a = agents.entry(i).or_default();
+            if pids.get(label).map_or(false, |p| *p != "-") { a.0 += 1 } else { a.1.push(label.to_string()) }
+        }
+    }
+
+    // listening TCP ports, assigned by the working directory of the process
+    let mut by_pid: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut pid = String::new();
+    for l in out_of("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"]).lines() {
+        if let Some(p) = l.strip_prefix('p') { pid = p.to_string(); }
+        else if let Some(port) = l.strip_prefix('n').and_then(|n| n.rsplit(':').next()).and_then(|x| x.parse().ok()) { by_pid.entry(pid.clone()).or_default().push(port); }
+    }
+    let mut ports: HashMap<usize, Vec<i64>> = HashMap::new();
+    if !by_pid.is_empty() {
+        let list = by_pid.keys().cloned().collect::<Vec<_>>().join(",");
+        for l in out_of("lsof", &["-a", "-d", "cwd", "-Fpn", "-p", &list]).lines() {
+            if let Some(p) = l.strip_prefix('p') { pid = p.to_string(); }
+            else if let Some(i) = l.strip_prefix('n').and_then(|cwd| owner(cwd)) { ports.entry(i).or_default().extend(by_pid.get(&pid).cloned().unwrap_or_default()); }
+        }
+    }
+
+    let mut rows: Vec<Value> = repos.iter().enumerate().map(|(i, r)| {
+        let dir = r.to_string_lossy();
+        let status = out_of("git", &["--no-optional-locks", "-C", &dir, "status", "--porcelain=v2", "--branch"]);
+        let ahead = status.lines().find_map(|l| l.strip_prefix("# branch.ab +")).and_then(|x| x.split(' ').next()).and_then(|x| x.parse::<i64>().ok()).unwrap_or(0);
+        let (running, down) = agents.remove(&i).unwrap_or_default();
+        let mut p = ports.remove(&i).unwrap_or_default();
+        p.sort(); p.dedup();
+        serde_json::json!({
+            "name": r.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            "path": dir, "running": running, "down": down, "ports": p,
+            "remote": !out_of("git", &["-C", &dir, "remote"]).trim().is_empty(),
+            "upstream": status.contains("# branch.upstream "),
+            "ahead": ahead,
+            "changed": status.lines().filter(|l| !l.starts_with('#')).count(),
+        })
+    }).collect();
+    rows.sort_by_key(|r| (r["down"].as_array().map_or(true, |d| d.is_empty()), r["name"].as_str().unwrap_or("").to_lowercase()));
+    println!("{}", serde_json::json!({"root": root.to_string_lossy(), "projects": rows}));
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.get(1).map(String::as_str) == Some("config") { config_cmd(&a); return; }
+    if a.get(1).map(String::as_str) == Some("projects") { projects_report(); return; }
     let mut c = open_db();
     let (nf, nc) = scan(&mut c);
     scan_inbox(&c);
