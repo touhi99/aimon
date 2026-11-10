@@ -4,6 +4,7 @@ A macOS menu bar app for monitoring AI tooling on a Mac: model usage and cost, C
 
 <p align="center">
 <img src="docs/popover-dark.png" alt="The Usage tab" width="420">
+<img src="docs/projects-dark.png" alt="The Projects tab" width="420">
 </p>
 
 ## Features
