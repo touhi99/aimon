@@ -236,22 +236,25 @@ fn config_cmd(a: &[String]) {
 }
 
 /// Claude subscription limits. Live from Anthropic's usage endpoint using Claude Code's own login,
-/// cached for 60s; falls back to the copy Claude Code keeps in ~/.claude.json (marked stale).
+/// cached for 5 min (the endpoint rate-limits, 429); on failure falls back to the last live copy, then to the copy
+/// Claude Code keeps in ~/.claude.json (both marked stale). Windows whose reset time has passed are dropped.
 fn fetch_limits() -> Value {
     use serde_json::json;
     if !option_on("claude_limits") { return json!({"source": "off"}); }
     let cache = data_dir().join("limits.json");
     let now = Local::now().timestamp();
-    if let Ok(t) = fs::read_to_string(&cache) {
-        if let Ok(v) = serde_json::from_str::<Value>(&t) {
-            if v["fetched"].as_i64().map_or(false, |f| now - f < 60) && v["source"] == "live" { return v; }
-        }
+    let last: Option<Value> = fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    if let Some(v) = &last {
+        if v["fetched"].as_i64().map_or(false, |f| now - f < 300) && v["source"] == "live" { return v.clone(); }
     }
+    // After a failed request (429 or network) wait 5 min before asking again, so refreshes do not keep the limit active.
+    let backoff = data_dir().join("limits_backoff");
+    let backing_off = fs::metadata(&backoff).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(false, |e| e.as_secs() < 300);
     // Ask the Keychain at most once a day: if the item is missing (API-key user) or access was refused, don't re-prompt every refresh.
     let marker = data_dir().join("no_keychain");
     let skip = fs::metadata(&marker).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(false, |e| e.as_secs() < 86400);
     let live = (|| -> Option<Value> {
-        if skip { return None; }
+        if skip || backing_off { return None; }
         let o = std::process::Command::new("security").args(["find-generic-password", "-s", "Claude Code-credentials", "-w"]).output().ok()?;
         if !o.status.success() { fs::write(&marker, "").ok(); return None; }
         let cred: Value = serde_json::from_slice(&o.stdout).ok()?;
@@ -262,8 +265,14 @@ fn fetch_limits() -> Value {
         if u.get("five_hour").is_none() { return None; }
         Some(u)
     })();
+    if live.is_none() && !skip && !backing_off { fs::write(&backoff, "").ok(); }
     let (u, source, fetched) = match live {
         Some(u) => (u, "live", now),
+        None if last.is_some() => {
+            let mut v = last.unwrap();
+            v["source"] = json!("stale");
+            return drop_reset_windows(v, now);
+        }
         None => {
             let cj = fs::read_to_string(home().join(".claude.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
             match cj.as_ref().and_then(|v| v.get("cachedUsageUtilization")) {
@@ -277,7 +286,16 @@ fn fetch_limits() -> Value {
         "weekly_sonnet": if u["seven_day_sonnet"].is_null() { Value::Null } else { pick("seven_day_sonnet") },
         "weekly_opus": if u["seven_day_opus"].is_null() { Value::Null } else { pick("seven_day_opus") }});
     if source == "live" { fs::write(&cache, out.to_string()).ok(); }
-    out
+    drop_reset_windows(out, now)
+}
+
+/// A window whose `resets_at` is in the past describes a finished period; its percentage is meaningless, so remove it.
+fn drop_reset_windows(mut v: Value, now: i64) -> Value {
+    for k in ["session", "weekly", "weekly_sonnet", "weekly_opus"] {
+        let past = v[k]["resets_at"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map_or(false, |t| t.timestamp() < now);
+        if past { v[k] = Value::Null; }
+    }
+    v
 }
 
 /// Old folder names -> current project names. Editable in ~/Library/Application Support/aimon/aliases.json.

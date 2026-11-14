@@ -46,9 +46,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let color: NSColor = pct >= 85 ? .systemRed : pct >= 60 ? .systemOrange : .labelColor
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let out = NSMutableAttributedString(string: " " + (useWeek ? "wk " : "") + "\(Int(pct.rounded()))%", attributes: [.font: font, .foregroundColor: color])
-        if s.api.today >= 0.005 {
-            out.append(NSAttributedString(string: "  " + Fmt.money(s.api.today), attributes: [.font: font, .foregroundColor: NSColor.systemOrange]))
-        }
         markStopped(out, font)
         b.attributedTitle = out
         b.toolTip = "Claude Pro: \(Int(ses.rounded()))% of the 5-hour session used, \(Int(wk.rounded()))% of the week.\nAPI spend today: \(Fmt.money(s.api.today))" + stoppedNote
