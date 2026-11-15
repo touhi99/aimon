@@ -710,6 +710,8 @@ fn projects_report() {
     let mut agents: HashMap<usize, (i64, Vec<String>)> = HashMap::new();
     let listed = out_of("launchctl", &["list"]);
     let pids: HashMap<&str, &str> = listed.lines().filter_map(|l| { let mut f = l.split('\t'); let pid = f.next()?; f.next()?; Some((f.next()?, pid)) }).collect();
+    // a program started outside launchd (opened from Finder after a clean quit) counts as running
+    let procs = out_of("ps", &["-axo", "command="]);
     if let Ok(rd) = fs::read_dir(home().join("Library/LaunchAgents")) {
         for e in rd.flatten() {
             if e.path().extension().map_or(true, |x| x != "plist") { continue; }
@@ -719,7 +721,8 @@ fn projects_report() {
             let prog = d["ProgramArguments"][0].as_str().or(d["Program"].as_str()).unwrap_or("");
             let Some(i) = owner(d["WorkingDirectory"].as_str().unwrap_or("")).or_else(|| owner(prog)) else { continue };
             let a = agents.entry(i).or_default();
-            if pids.get(label).map_or(false, |p| *p != "-") { a.0 += 1 } else { a.1.push(label.to_string()) }
+            let alive = pids.get(label).map_or(false, |p| *p != "-") || (!prog.is_empty() && procs.lines().any(|l| l.starts_with(prog)));
+            if alive { a.0 += 1 } else { a.1.push(label.to_string()) }
         }
     }
 
