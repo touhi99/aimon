@@ -426,7 +426,7 @@ struct PopoverView: View {
     func projectsTab() -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let d = store.projects, d.root != nil {
-                title("Projects", trailing: "in development in Backtrail")
+                title("Projects", trailing: securitySummary(d.projects))
                 if d.projects.isEmpty { Text("No Backtrail thread in development has a repository.").font(.system(size: 12)).foregroundStyle(.secondary) }
                 ForEach(d.projects) { p in projectRow(p) }
                 if let age = d.projects.compactMap({ $0.security.flatMap(securityAge) }).min() {
@@ -455,6 +455,12 @@ struct PopoverView: View {
                 Text(service.isEmpty ? "no service" : service).font(.system(size: 11)).monospacedDigit()
                     .foregroundStyle(service.isEmpty ? .tertiary : .secondary).lineLimit(1).truncationMode(.tail)
                 Spacer()
+                if let s = p.security {
+                    let note = securityNote(s)
+                    Image(systemName: note == nil ? "checkmark.shield" : "exclamationmark.shield")
+                        .font(.system(size: 11)).foregroundStyle(note?.1 ?? Color.green.opacity(0.8))
+                        .help(note?.0 ?? "No secrets or dependency advisories at the last scan")
+                }
                 Text(git.0 + extra).font(.system(size: 11)).foregroundStyle(git.1).lineLimit(1)
             }
             if !p.down.isEmpty {
@@ -464,6 +470,15 @@ struct PopoverView: View {
                 Text(note.0).font(.system(size: 10)).foregroundStyle(note.1).padding(.leading, 15)
             }
         }.help(p.path)
+    }
+    /// Header text: the scan result across all listed repositories, or the tab's scope when no scan file exists.
+    func securitySummary(_ rows: [ProjRow]) -> String {
+        let scanned = rows.compactMap { $0.security }
+        if scanned.isEmpty { return "in development in Backtrail" }
+        let secrets = scanned.reduce(0) { $0 + $1.secrets }, adv = scanned.reduce(0) { $0 + $1.advisories }
+        if secrets > 0 { return "\(secrets) secret\(secrets == 1 ? "" : "s") found" }
+        if adv > 0 { return "\(adv) advisor\(adv == 1 ? "y" : "ies") open" }
+        return "security scan clean"
     }
     /// A line for a repository whose last scan found something or is out of date; nil when clean and recent.
     func securityNote(_ s: Sec) -> (String, Color)? {
