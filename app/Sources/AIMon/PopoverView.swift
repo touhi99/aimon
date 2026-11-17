@@ -32,7 +32,8 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 20) {
             if let s = store.snap {
                 Picker("", selection: $tab) {
-                    Text("Usage").tag(0); Text("Trace").tag(1); Text("Network").tag(2); Text("Projects").tag(3)
+                    Text("Usage").tag(0); Text("Trace").tag(1); Text("Network").tag(2)
+                    if store.projects?.root != nil { Text("Projects").tag(3) }
                 }.pickerStyle(.segmented).labelsHidden()
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 20) {
@@ -422,27 +423,16 @@ struct PopoverView: View {
     }
 
     // MARK: Projects
-    func chooseProjects() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.prompt = "Choose"
-        NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let u = panel.url { store.setProjects(u.path) }
-    }
     func projectsTab() -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let d = store.projects, let root = d.root {
-                HStack {
-                    title("Projects", trailing: (root as NSString).abbreviatingWithTildeInPath)
-                    Button("Change") { chooseProjects() }.buttonStyle(.borderless).font(.system(size: 10))
-                }
-                if d.projects.isEmpty { Text("No git repositories in this folder.").font(.system(size: 12)).foregroundStyle(.secondary) }
+            if let d = store.projects, d.root != nil {
+                title("Projects", trailing: "in development in Backtrail")
+                if d.projects.isEmpty { Text("No Backtrail thread in development has a repository.").font(.system(size: 12)).foregroundStyle(.secondary) }
                 ForEach(d.projects) { p in projectRow(p) }
+                if let age = d.projects.compactMap({ $0.security.flatMap(securityAge) }).min() {
+                    Text("Security scan \(age == 0 ? "today" : "\(age) day\(age == 1 ? "" : "s") ago"). Findings are listed under the repository.").font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
                 Text("Services are LaunchAgents with KeepAlive whose program or working directory is inside the repository. Ports are those its processes listen on.").font(.system(size: 10)).foregroundStyle(.tertiary)
-            } else if store.projects != nil {
-                title("Projects")
-                Text("Lists the git repositories in a folder: whether their LaunchAgents run, the ports they listen on, and unpushed or uncommitted work.").font(.system(size: 11)).foregroundStyle(.secondary)
-                Button("Choose folder…") { chooseProjects() }.font(.system(size: 11))
             } else {
                 Text("Reading projects…").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
             }
@@ -470,7 +460,21 @@ struct PopoverView: View {
             if !p.down.isEmpty {
                 Text("stopped: " + p.down.joined(separator: ", ")).font(.system(size: 10)).foregroundStyle(.red).padding(.leading, 15)
             }
+            if let s = p.security, let note = securityNote(s) {
+                Text(note.0).font(.system(size: 10)).foregroundStyle(note.1).padding(.leading, 15)
+            }
         }.help(p.path)
+    }
+    /// A line for a repository whose last scan found something or is out of date; nil when clean and recent.
+    func securityNote(_ s: Sec) -> (String, Color)? {
+        if s.secrets > 0 { return ("\(s.secrets) secret\(s.secrets == 1 ? "" : "s") found in git history", .red) }
+        if s.advisories > 0 { return ("\(s.advisories) dependency advisor\(s.advisories == 1 ? "y" : "ies")", .orange) }
+        if let d = securityAge(s), d > 10 { return ("security scan \(d) days old", .orange) }
+        return nil
+    }
+    func securityAge(_ s: Sec) -> Int? {
+        guard let c = s.checked, let date = ISO8601DateFormatter().date(from: c) else { return nil }
+        return Calendar.current.dateComponents([.day], from: date, to: Date()).day
     }
 
     func footer(_ s: Snapshot) -> some View {

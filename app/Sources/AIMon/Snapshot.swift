@@ -81,8 +81,11 @@ struct ProjRow: Codable, Identifiable {
     var name: String; var path: String
     var running: Int; var down: [String]; var ports: [Int]
     var remote: Bool; var upstream: Bool; var ahead: Int; var changed: Int
+    var security: Sec?
     var id: String { path }
 }
+/// Result of an external security scan of one repository (security.json in the aimon support folder).
+struct Sec: Codable { var secrets: Int; var advisories: Int; var checked: String? }
 struct ProjData: Codable { var root: String?; var projects: [ProjRow] }
 
 enum Fmt {
@@ -151,15 +154,6 @@ final class Store: ObservableObject {
         let bin = binary
         Task.detached {
             _ = Store.run(bin, ["config", key, "on"])
-            await MainActor.run { self.refresh() }
-        }
-    }
-
-    /// Sets the folder whose git repositories the Projects tab lists, then reloads.
-    func setProjects(_ folder: String) {
-        let bin = binary
-        Task.detached {
-            _ = Store.run(bin, ["config", "projects", folder])
             await MainActor.run { self.refresh() }
         }
     }

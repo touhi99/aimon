@@ -14,7 +14,7 @@ There are four tabs.
 - **Usage**: token counts and estimated API cost per project and per model, a daily and monthly spend chart, and Claude plan limits (5-hour session and weekly percentage). Optionally, Ollama cloud spend. Local models are counted as tokens only.
 - **Trace**: Claude Code activity from its session logs. Tool calls in the last 24 hours with counts and failures, recent failures with the command or file involved, and recent sessions with duration, model calls, tool calls and failures.
 - **Network**: outbound traffic per process, with open connections and remote hosts. AI-related processes are marked, and hosts that are not recognised are flagged. Hosts are resolved by reverse DNS, so entries are IP-level and not a full domain log.
-- **Projects** (off until a folder is chosen): one row per git repository in a chosen folder, with the LaunchAgents that belong to it and whether they run, the TCP ports its processes listen on, and unpushed or uncommitted work. A red dot is added to the menu bar item while a LaunchAgent that should be running is not.
+- **Projects** (optional, shown only when Backtrail is installed): one row per repository of a Backtrail thread whose state is `moving`, with the LaunchAgents that belong to it and whether they run, the TCP ports its processes listen on, and unpushed or uncommitted work. A red dot is added to the menu bar item while a LaunchAgent that should be running is not.
 
 ## How it works
 
@@ -25,8 +25,7 @@ Usage comes from two sources:
 
 Usage is stored in a local SQLite database, `~/Library/Application Support/aimon/aimon.db`. The Trace tab reads the same Claude Code logs. The Network tab samples `nettop` and `lsof` while the app runs.
 
-The Projects tab lists git repositories up to two folders below the chosen folder. The folder is set with the button in the tab or
-`aimon config projects <folder>` (`off` to clear). A LaunchAgent in `~/Library/LaunchAgents` belongs to a repository when its
+The Projects tab reads `config.json` and `backtrail.db` (read-only) in `~/Library/Application Support/Backtrail`: the `repos` map gives each repository's folder and thread, and the thread state comes from the database. The tab is hidden when these files are absent. A LaunchAgent in `~/Library/LaunchAgents` belongs to a repository when its
 working directory or program is inside it; only agents with `KeepAlive` are counted, since scheduled agents are idle most of the
 time. A listening port belongs to a repository when the working directory of its process is inside it. Processes of other users
 are not visible. The tab was checked on one Mac only.
@@ -60,10 +59,18 @@ Only one instance runs at a time; a second launch exits immediately.
   When enabled, and if `ollama signin` was run, AI Project Monitor signs a request to `ollama.com/api/usage` with the key in `~/.ollama/id_ed25519`.
   The key is used locally for signing and is not transmitted. This endpoint is also undocumented.
 - **Network tab**: lists outbound connections per process using `nettop` and `lsof`. Nothing is sent anywhere.
-- **Projects tab**: runs `git status` and `git remote` in each repository, `launchctl list`, `plutil` on the files in
-  `~/Library/LaunchAgents`, and `lsof`. Nothing is changed and nothing is sent anywhere.
+- **Projects tab** (when Backtrail is present): reads the two Backtrail files above, runs `git status` and `git remote` in each repository, `launchctl list`, `plutil` on the files in
+  `~/Library/LaunchAgents`, `lsof`, and `security.json` in its own support folder when present. Nothing is changed and nothing is sent anywhere.
 
 Cost figures are estimates from a price list. The provider's invoice is authoritative.
+
+## Security results (optional)
+
+A scanner can write `~/Library/Application Support/aimon/security.json`. The Projects tab matches its entries to repositories by absolute path and shows a line under a repository with secrets or dependency advisories, or when the scan is older than 10 days. AI Project Monitor only reads the file; it does not run a scanner.
+
+```json
+{"checked": "2026-11-17T09:00:00+01:00", "repos": [{"path": "/Users/name/code/app", "secrets": 0, "advisories": 2}]}
+```
 
 ## Reporting usage
 

@@ -223,7 +223,6 @@ fn option_on(key: &str) -> bool {
         .map_or(false, |v| v[key].as_bool().unwrap_or(false))
 }
 fn config_cmd(a: &[String]) {
-    if a.get(2).map(String::as_str) == Some("projects") { projects_config(a.get(3)); return; }
     let (Some(k), Some(v)) = (a.get(2), a.get(3)) else { eprintln!("usage: aimon config <claude_limits|ollama> <on|off>"); return };
     if !["claude_limits", "ollama"].contains(&k.as_str()) || !["on", "off"].contains(&v.as_str()) { eprintln!("usage: aimon config <claude_limits|ollama> <on|off>"); return; }
     let path = data_dir().join("config.json");
@@ -666,44 +665,32 @@ fn net_report(c: &Connection) {
     println!("{}", json!({"procs": procs.into_iter().take(12).collect::<Vec<_>>(), "since": now - 86400}));
 }
 
-/// `aimon config projects <folder|off>`: the folder whose git repositories the Projects tab lists.
-fn projects_config(v: Option<&String>) {
-    let Some(v) = v else { eprintln!("usage: aimon config projects <folder|off>"); return };
-    let path = data_dir().join("config.json");
-    let mut cfg = fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| v.is_object()).unwrap_or(serde_json::json!({}));
-    if v == "off" { cfg.as_object_mut().unwrap().remove("projects"); } else {
-        let Ok(dir) = fs::canonicalize(v) else { eprintln!("not a folder: {v}"); return };
-        cfg["projects"] = serde_json::json!(dir.to_string_lossy());
-    }
-    fs::write(&path, cfg.to_string()).ok();
-    println!("projects is {v}");
-}
-
 /// Standard output of a command, empty when it cannot run.
 fn out_of(cmd: &str, args: &[&str]) -> String {
     std::process::Command::new(cmd).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
 }
 
-/// Git repositories at most `depth` folders below `dir`. Does not look inside a repository.
-fn find_repos(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
-    if dir.join(".git").exists() { out.push(dir.to_path_buf()); return; }
-    if depth == 0 { return; }
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        if !e.path().is_dir() || name.starts_with('.') || name == "node_modules" || name == "target" { continue; }
-        find_repos(&e.path(), depth - 1, out);
-    }
+/// Repositories of the Backtrail threads that are in development (state `moving`): (thread name, path).
+/// Reads Backtrail's config for the workspace and the repo-to-thread map, and its database for the live state.
+fn backtrail_repos() -> (Option<PathBuf>, Vec<(String, PathBuf)>) {
+    let dir = home().join("Library/Application Support/Backtrail");
+    let Some(cfg) = fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return (None, vec![]) };
+    let Some(ws) = cfg["workspace"].as_str().map(PathBuf::from) else { return (None, vec![]) };
+    let Ok(c) = Connection::open_with_flags(dir.join("backtrail.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return (Some(ws), vec![]) };
+    let moving: Vec<String> = c.prepare("SELECT name FROM threads WHERE state='moving'")
+        .and_then(|mut q| q.query_map([], |r| r.get(0)).map(|r| r.flatten().collect())).unwrap_or_default();
+    let repos = cfg["repos"].as_array().into_iter().flatten()
+        .filter_map(|r| Some((r[1].as_str()?.to_string(), ws.join(r[0].as_str()?))))
+        .filter(|(t, p)| moving.contains(t) && p.join(".git").exists()).collect();
+    (Some(ws), repos)
 }
 
-/// State of each git repository under the configured folder: LaunchAgents that belong to it and whether
+/// State of each repository of a Backtrail thread in development: LaunchAgents that belong to it and whether
 /// they run, TCP ports its processes listen on, and unpushed or uncommitted work. Read-only.
 fn projects_report() {
-    let root = fs::read_to_string(data_dir().join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["projects"].as_str().map(PathBuf::from));
+    let (root, found) = backtrail_repos();
     let Some(root) = root else { println!("{}", serde_json::json!({"root": null, "projects": []})); return };
-    let mut repos = vec![];
-    find_repos(&root, 2, &mut repos);
+    let repos: Vec<PathBuf> = found.iter().map(|f| f.1.clone()).collect();
     let owner = |p: &str| repos.iter().position(|r| !p.is_empty() && Path::new(p).starts_with(r));
 
     // LaunchAgents with KeepAlive: (running, labels that are not running) per repository
@@ -742,6 +729,16 @@ fn projects_report() {
         }
     }
 
+    // Optional security results written by an external scanner: {"checked": <rfc3339>, "repos": [{"path", "secrets", "advisories"}]}
+    let security: HashMap<String, Value> = fs::read_to_string(home().join("Library/Application Support/aimon/security.json")).ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .map(|v| v["repos"].as_array().cloned().unwrap_or_default().into_iter().filter_map(|mut r| {
+            let path = r["path"].as_str()?.to_string();
+            r["checked"] = v["checked"].clone();
+            Some((path, r))
+        }).collect())
+        .unwrap_or_default();
+
     let mut rows: Vec<Value> = repos.iter().enumerate().map(|(i, r)| {
         let dir = r.to_string_lossy();
         let status = out_of("git", &["--no-optional-locks", "-C", &dir, "status", "--porcelain=v2", "--branch"]);
@@ -750,12 +747,13 @@ fn projects_report() {
         let mut p = ports.remove(&i).unwrap_or_default();
         p.sort(); p.dedup();
         serde_json::json!({
-            "name": r.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            "name": found[i].0,
             "path": dir, "running": running, "down": down, "ports": p,
             "remote": !out_of("git", &["-C", &dir, "remote"]).trim().is_empty(),
             "upstream": status.contains("# branch.upstream "),
             "ahead": ahead,
             "changed": status.lines().filter(|l| !l.starts_with('#')).count(),
+            "security": security.get(&*dir).map(|s| serde_json::json!({"secrets": s["secrets"], "advisories": s["advisories"], "checked": s["checked"]})),
         })
     }).collect();
     rows.sort_by_key(|r| (r["down"].as_array().map_or(true, |d| d.is_empty()), r["name"].as_str().unwrap_or("").to_lowercase()));
