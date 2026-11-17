@@ -760,10 +760,33 @@ fn projects_report() {
     println!("{}", serde_json::json!({"root": root.to_string_lossy(), "projects": rows}));
 }
 
+/// `aimon security`: the scan results in `security.json`, one line per repository. Read-only.
+fn security_report() {
+    let path = home().join("Library/Application Support/aimon/security.json");
+    let Some(v) = fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        println!("No scan results. A scanner writes {}.", path.display());
+        return;
+    };
+    let age = v["checked"].as_str().and_then(|c| DateTime::parse_from_rfc3339(c).ok())
+        .map(|d| (Local::now().signed_duration_since(d)).num_days());
+    println!("Security scan: {}", match age { Some(0) => "today".to_string(), Some(d) => format!("{d} days ago"), None => "date unknown".into() });
+    let repos = v["repos"].as_array().cloned().unwrap_or_default();
+    let width = repos.iter().filter_map(|r| r["path"].as_str()).map(|p| p.rsplit('/').next().unwrap_or(p).len()).max().unwrap_or(0);
+    for r in &repos {
+        let name = r["path"].as_str().map(|p| p.rsplit('/').next().unwrap_or(p)).unwrap_or("?");
+        let (s, d) = (r["secrets"].as_i64().unwrap_or(0), r["advisories"].as_i64().unwrap_or(0));
+        let state = if s > 0 { "SECRETS" } else if d > 0 { "advisories" } else { "clean" };
+        println!("{name:<width$}  {state:<10}  secrets {s}  advisories {d}");
+    }
+    let (s, d): (i64, i64) = repos.iter().fold((0, 0), |a, r| (a.0 + r["secrets"].as_i64().unwrap_or(0), a.1 + r["advisories"].as_i64().unwrap_or(0)));
+    println!("{} repositories, {s} secrets, {d} advisories", repos.len());
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.get(1).map(String::as_str) == Some("config") { config_cmd(&a); return; }
     if a.get(1).map(String::as_str) == Some("projects") { projects_report(); return; }
+    if a.get(1).map(String::as_str) == Some("security") { security_report(); return; }
     let mut c = open_db();
     let (nf, nc) = scan(&mut c);
     scan_inbox(&c);
