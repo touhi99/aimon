@@ -2050,6 +2050,8 @@ fn main() {
         Some("trace") => trace_report(&c),
         Some("net") => net_report(&c),
         Some("month") => month_report(&c, a.get(2).and_then(|s| s.parse().ok()).unwrap_or(0)),
-        _ => eprintln!("usage: aimon [today|by-project N|by-model N|scan]"),
+        _ => eprintln!(
+            "usage: aimon [today | by-project N | by-model N | month [N] | snapshot | trace | net | scan | log ...]\n       aimon usage | projects | security | use <target> | config <claude_limits|ollama> <on|off>"
+        ),
     }
 }
