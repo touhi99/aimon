@@ -27,13 +27,14 @@ struct PopoverView: View {
     private var maxScrollHeight: CGFloat { max(300, (NSScreen.main?.visibleFrame.height ?? 800) - 170) }
     @State private var openSession: String?
     @State private var openProc: String?
+    @State private var openUse = ProcessInfo.processInfo.environment["AIMON_OPEN"]   // a project path shown open; set for screenshots
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             if let s = store.snap {
                 Picker("", selection: $tab) {
-                    Text("Usage").tag(0); Text("Trace").tag(1); Text("Network").tag(2)
-                    if store.projects?.root != nil { Text("Projects").tag(3) }
+                    Text("Spend").tag(0); Text("Trace").tag(1); Text("Network").tag(2)
+                    if store.projects?.root != nil { Text("Projects").tag(3); Text("Use").tag(4) }
                 }.pickerStyle(.segmented).labelsHidden()
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 20) {
@@ -41,6 +42,7 @@ struct PopoverView: View {
                         case 1: traceTab()
                         case 2: networkTab()
                         case 3: projectsTab()
+                        case 4: useTab()
                         default:
                             limits(s)
                             ollamaPlan(s)
@@ -438,6 +440,105 @@ struct PopoverView: View {
             }
         }
     }
+    // MARK: Use: which projects are used, grouped, with a 12-week strip; a click shows the year as a day grid
+    func useTab() -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if let u = store.usage {
+                let groups: [(String, String?, [UseRow])] = [
+                    ("In use", nil, u.rows.filter { $0.status == "used" }),
+                    ("Going stale", "still built, not opened", u.rows.filter { $0.status == "quiet" || $0.status == "built_unused" }),
+                    ("Not used lately", nil, u.rows.filter { $0.status == "idle" }),
+                ]
+                ForEach(groups.filter { !$0.2.isEmpty }, id: \.0) { g in
+                    VStack(alignment: .leading, spacing: 8) {
+                        title(g.0, trailing: g.1)
+                        ForEach(g.2) { useRow($0, since: u.since) }
+                    }
+                }
+                let fresh = u.rows.filter { $0.status == "new" }.map { $0.name }
+                if !fresh.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        title("Not used yet")
+                        Text(fresh.joined(separator: ", ")).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                }
+                let since = u.since.map { "Since " + Date(timeIntervalSince1970: TimeInterval($0)).formatted(.dateTime.day().month(.abbreviated)) } ?? "Tracking from today"
+                Text(since + " · a square is a week, darker is more days · click for the year")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                    .help("A day counts when the project's app is opened or its page is loaded. Not tracked: " + u.untracked.joined(separator: ", "))
+            } else {
+                Text("Reading use…").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
+            }
+        }
+    }
+    func useRow(_ r: UseRow, since: Int?) -> some View {
+        // days before tracking began are drawn fainter than days without use
+        let start = Calendar.current.startOfDay(for: since.map { Date(timeIntervalSince1970: TimeInterval($0)) } ?? Date())
+        let today = Calendar.current.startOfDay(for: Date())
+        let stale = r.status == "quiet" || r.status == "built_unused"
+        let weeksIdle = r.last.map { Int(Date().timeIntervalSince1970 - TimeInterval($0)) / 604800 } ?? 0
+        let note = stale ? "\(weeksIdle == 0 ? "1" : "\(weeksIdle)") wk · \(r.commits28) commit\(r.commits28 == 1 ? "" : "s")"
+            : r.status == "used" ? "\(r.days7) day\(r.days7 == 1 ? "" : "s") this wk" : "last " + (r.last.map { Self.ago(Date(timeIntervalSince1970: TimeInterval($0))) } ?? "never")
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text(r.name).font(.system(size: 12, weight: .medium)).lineLimit(1).frame(width: 120, alignment: .leading)
+                HStack(spacing: 2) {
+                    ForEach(Array(r.weeks.enumerated()), id: \.offset) { i, n in
+                        let weekEnd = Calendar.current.date(byAdding: .day, value: -7 * (r.weeks.count - 1 - i), to: today)!
+                        RoundedRectangle(cornerRadius: 2).fill(n > 0 ? Color.green.opacity(0.3 + 0.7 * Double(min(n, 7)) / 7) : Color.gray.opacity(weekEnd < start ? 0.06 : 0.18))
+                            .frame(width: 11, height: 11)
+                    }
+                }
+                Spacer()
+                Text(note).font(.system(size: 11)).monospacedDigit().foregroundStyle(stale ? Color.orange : Color.secondary).lineLimit(1)
+                Image(systemName: openUse == r.id ? "chevron.down" : "chevron.right").font(.system(size: 9)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { openUse = openUse == r.id ? nil : r.id }
+            if openUse == r.id { yearGrid(r, start: start) }
+        }
+    }
+    /// The last year as a day grid: one column per week (Monday on top), one square per day.
+    func yearGrid(_ r: UseRow, start tracked: Date) -> some View {
+        let cal = Calendar(identifier: .iso8601)
+        let today = cal.startOfDay(for: Date())
+        let thisMonday = cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: today))!
+        let start = cal.date(byAdding: .weekOfYear, value: -52, to: thisMonday)!
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let used = Set(r.days)
+        let weeks = (0...52).map { cal.date(byAdding: .weekOfYear, value: $0, to: start)! }
+        let yearCount = r.days.count
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 0) {
+                ForEach(Array(weeks.enumerated()), id: \.offset) { i, w in
+                    let firstOfMonth = i == 0 || cal.component(.month, from: w) != cal.component(.month, from: weeks[i - 1])
+                    Text(firstOfMonth && i > 0 && i < 51 ? w.formatted(.dateTime.month(.abbreviated)) : "")
+                        .font(.system(size: 8)).foregroundStyle(.tertiary).fixedSize().frame(width: 9, alignment: .leading)
+                }
+            }
+            HStack(spacing: 0) {
+                ForEach(weeks, id: \.self) { w in
+                    VStack(spacing: 1.5) {
+                        ForEach(0..<7, id: \.self) { d in
+                            let day = cal.date(byAdding: .day, value: d, to: w)!
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(day > today ? Color.clear : used.contains(fmt.string(from: day)) ? Color.green : Color.gray.opacity(day < tracked ? 0.06 : 0.18))
+                                .frame(width: 7.5, height: 7.5)
+                                .help(day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
+                        }
+                    }.frame(width: 9)
+                }
+            }
+            Text("Used \(yearCount) day\(yearCount == 1 ? "" : "s") in the last year · \(r.commits28) commits in 4 weeks")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        .padding(10).background(Color.gray.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+    }
+    static func ago(_ d: Date) -> String {
+        let days = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: d), to: Calendar.current.startOfDay(for: Date())).day ?? 0
+        return days == 0 ? "today" : days == 1 ? "yesterday" : days < 14 ? "\(days) days ago" : "\(days / 7) weeks ago"
+    }
+
     func projectRow(_ p: ProjRow) -> some View {
         let agents = p.running + p.down.count
         var service = agents > 0 ? "\(p.running)/\(agents) running" : ""

@@ -33,6 +33,8 @@ fn open_db() -> Connection {
         CREATE TABLE IF NOT EXISTS rdns(ip TEXT PRIMARY KEY, name TEXT);
         CREATE TABLE IF NOT EXISTS fwd(host TEXT PRIMARY KEY, ips TEXT, ts INTEGER);
         CREATE TABLE IF NOT EXISTS pidlabel(pid TEXT, base TEXT, label TEXT, PRIMARY KEY(pid, base));
+        CREATE TABLE IF NOT EXISTS uses(ts INTEGER, key TEXT, via TEXT);
+        CREATE INDEX IF NOT EXISTS uses_key ON uses(key, ts);
     ").unwrap();
     c.execute("ALTER TABLE tools ADD COLUMN arg TEXT", []).ok();
     c.execute("ALTER TABLE tools ADD COLUMN msg TEXT", []).ok();
@@ -670,19 +672,126 @@ fn out_of(cmd: &str, args: &[&str]) -> String {
     std::process::Command::new(cmd).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
 }
 
-/// Repositories of the Backtrail threads that are in development (state `moving`): (thread name, path).
-/// Reads Backtrail's config for the workspace and the repo-to-thread map, and its database for the live state.
-fn backtrail_repos() -> (Option<PathBuf>, Vec<(String, PathBuf)>) {
+/// Every repository in Backtrail's repo-to-thread map that exists: (thread name, path, thread state).
+/// Reads Backtrail's config for the workspace and the map, and its database for the live state.
+fn all_repos() -> (Option<PathBuf>, Vec<(String, PathBuf, String)>) {
     let dir = home().join("Library/Application Support/Backtrail");
     let Some(cfg) = fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return (None, vec![]) };
     let Some(ws) = cfg["workspace"].as_str().map(PathBuf::from) else { return (None, vec![]) };
     let Ok(c) = Connection::open_with_flags(dir.join("backtrail.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return (Some(ws), vec![]) };
-    let moving: Vec<String> = c.prepare("SELECT name FROM threads WHERE state='moving'")
-        .and_then(|mut q| q.query_map([], |r| r.get(0)).map(|r| r.flatten().collect())).unwrap_or_default();
+    let states: HashMap<String, String> = c.prepare("SELECT name, state FROM threads")
+        .and_then(|mut q| q.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|r| r.flatten().collect())).unwrap_or_default();
     let repos = cfg["repos"].as_array().into_iter().flatten()
-        .filter_map(|r| Some((r[1].as_str()?.to_string(), ws.join(r[0].as_str()?))))
-        .filter(|(t, p)| moving.contains(t) && p.join(".git").exists()).collect();
+        .filter_map(|r| { let t = r[1].as_str()?.to_string(); let s = states.get(&t).cloned().unwrap_or_default(); Some((t, ws.join(r[0].as_str()?), s)) })
+        .filter(|(_, p, _)| p.join(".git").exists()).collect();
     (Some(ws), repos)
+}
+
+/// Repositories of the Backtrail threads that are in development (state `moving`): (thread name, path).
+fn backtrail_repos() -> (Option<PathBuf>, Vec<(String, PathBuf)>) {
+    let (ws, all) = all_repos();
+    (ws, all.into_iter().filter(|r| r.2 == "moving").map(|r| (r.0, r.1)).collect())
+}
+
+/// `aimon use <key> [--via app|web|cli]`: records that the owner used a project. The key is an app bundle path,
+/// a repository folder relative to the workspace, or a Backtrail thread name. At most one row per key per hour.
+fn use_cmd(a: &[String]) {
+    let Some(key) = a.get(2).filter(|k| !k.starts_with("--")) else { eprintln!("usage: aimon use <app path|repo folder|thread> [--via app|web|cli]"); return };
+    let via = a.iter().position(|x| x == "--via").and_then(|i| a.get(i + 1)).map_or("cli", |s| s.as_str());
+    let c = open_db();
+    let now = Local::now().timestamp();
+    let recent: i64 = c.query_row("SELECT COUNT(*) FROM uses WHERE key=? AND ts>?", params![key, now - 3600], |r| r.get(0)).unwrap_or(0);
+    if recent == 0 { c.execute("INSERT INTO uses VALUES(?,?,?)", params![now, key, via]).ok(); }
+}
+
+/// App bundles that may belong to a project: in /Applications, ~/Applications, and up to three levels inside a repository.
+fn app_bundles(repos: &[(String, PathBuf, String)]) -> Vec<PathBuf> {
+    let mut out = vec![];
+    for d in [PathBuf::from("/Applications"), home().join("Applications")] {
+        if let Ok(rd) = fs::read_dir(d) { out.extend(rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "app"))); }
+    }
+    for (_, r, _) in repos {
+        let found = out_of("find", &[&r.to_string_lossy(), "-maxdepth", "3", "-name", "*.app", "-type", "d", "-not", "-path", "*/.build/*", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/target/*"]);
+        out.extend(found.lines().map(PathBuf::from));
+    }
+    out
+}
+
+/// The repository an app bundle belongs to: the one it sits in, the one named in aimon's config.json `apps`
+/// map ({"Kestrel.app": "kestrel/kestrel-app"}), or the one whose folder has the bundle's name.
+fn repo_of_app(app: &Path, repos: &[(String, PathBuf, String)], ws: &Path, apps: &Value) -> Option<usize> {
+    if let Some(i) = repos.iter().position(|r| app.starts_with(&r.1)) { return Some(i); }
+    let file = app.file_name()?.to_string_lossy().to_string();
+    if let Some(rel) = apps[file.as_str()].as_str() { return repos.iter().position(|r| r.1 == ws.join(rel)); }
+    let stem = file.trim_end_matches(".app").to_lowercase();
+    repos.iter().position(|r| r.1.file_name().map_or(false, |n| n.to_string_lossy().to_lowercase() == stem))
+}
+
+/// `aimon usage`: for every project (Backtrail repository, dropped threads left out), how often the owner used it and
+/// how much was built in it. Use is recorded by `aimon use` (the menu bar app records app activations); an app's
+/// last-used date from Spotlight fills in before that. Built is commits in the last 28 days. Read-only apart from the query.
+fn usage_report() {
+    let (ws, repos) = all_repos();
+    let Some(ws) = ws else { println!("{}", serde_json::json!({"since": null, "rows": [], "untracked": []})); return };
+    let repos: Vec<_> = repos.into_iter().filter(|r| r.2 != "dropped").collect();
+    let cfg = fs::read_to_string(data_dir().join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
+    let mut apps: HashMap<usize, Vec<String>> = HashMap::new();
+    for b in app_bundles(&repos) {
+        if let Some(i) = repo_of_app(&b, &repos, &ws, &cfg["apps"]) { apps.entry(i).or_default().push(b.to_string_lossy().to_string()); }
+    }
+    let c = open_db();
+    let now = Local::now().timestamp();
+    let since: Option<i64> = c.query_row("SELECT MIN(ts) FROM uses", [], |r| r.get(0)).ok().flatten();
+    let rows_of = |keys: &[String]| -> Vec<i64> {
+        let mut v = vec![];
+        for k in keys {
+            if let Ok(mut q) = c.prepare("SELECT ts FROM uses WHERE key=?") { v.extend(q.query_map([k], |r| r.get::<_, i64>(0)).map(|r| r.flatten().collect::<Vec<_>>()).unwrap_or_default()); }
+        }
+        v
+    };
+    let days_in = |ts: &[i64], n: i64| -> usize {
+        let from = day_start(n - 1);
+        let mut d: Vec<NaiveDate> = ts.iter().filter(|t| **t >= from).filter_map(|t| Local.timestamp_opt(*t, 0).single()).map(|t| t.date_naive()).collect();
+        d.sort(); d.dedup(); d.len()
+    };
+    let mut rows = vec![];
+    let mut untracked = vec![];
+    for (i, (name, path, state)) in repos.iter().enumerate() {
+        let rel = path.strip_prefix(&ws).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let app_list = apps.remove(&i).unwrap_or_default();
+        let mut keys = app_list.clone();
+        keys.push(rel.clone());
+        keys.push(name.clone());
+        let mut ts = rows_of(&keys);
+        let web = cfg["web"].as_array().map_or(false, |w| w.iter().any(|x| x.as_str() == Some(rel.as_str())));
+        if app_list.is_empty() && ts.is_empty() && !web { untracked.push(name.clone()); continue; }
+        // Spotlight's last-used date of the app bundles, for the time before aimon recorded anything
+        let seen = app_list.iter().filter_map(|a| DateTime::parse_from_str(out_of("mdls", &["-raw", "-name", "kMDItemLastUsedDate", a]).trim(), "%Y-%m-%d %H:%M:%S %z").ok()).map(|d| d.timestamp()).max();
+        let last = ts.iter().copied().max().into_iter().chain(seen).max();
+        ts.extend(seen);   // the Spotlight date is a day of use too
+        let commits = |days: i64| out_of("git", &["-C", &path.to_string_lossy(), "rev-list", "--count", &format!("--since={days}.days"), "HEAD"]).trim().parse::<i64>().unwrap_or(0);
+        let (c7, c28) = (commits(7), commits(28));
+        let idle = last.map(|l| (now - l) / 86400);
+        let tracked_days = since.map_or(0, |s| (now - s) / 86400);
+        let status = match idle {
+            Some(d) if d <= 7 => "used",
+            Some(d) if d <= 14 => "quiet",
+            None if tracked_days < 14 => "new",
+            _ if c28 > 0 => "built_unused",
+            _ => "idle",
+        };
+        // the days used in the last year, and days used in each of the last 12 weeks (oldest first; the last week ends today)
+        let mut days: Vec<NaiveDate> = ts.iter().filter(|t| **t >= day_start(370)).filter_map(|t| Local.timestamp_opt(*t, 0).single()).map(|t| t.date_naive()).collect();
+        days.sort(); days.dedup();
+        let today = Local::now().date_naive();
+        let weeks: Vec<usize> = (0..12).rev().map(|k| days.iter().filter(|d| { let back = (today - **d).num_days(); back >= 7 * k && back < 7 * k + 7 }).count()).collect();
+        rows.push(serde_json::json!({"name": name, "path": path.to_string_lossy(), "state": state, "apps": app_list,
+            "days7": days_in(&ts, 7), "days28": days_in(&ts, 28), "last": last, "commits7": c7, "commits28": c28, "status": status,
+            "weeks": weeks, "days": days.iter().map(|d| d.to_string()).collect::<Vec<_>>()}));
+    }
+    let rank = |s: &str| match s { "built_unused" => 0, "used" => 1, "quiet" => 2, "new" => 3, _ => 4 };
+    rows.sort_by_key(|r| (rank(r["status"].as_str().unwrap_or("")), -r["days28"].as_i64().unwrap_or(0)));
+    println!("{}", serde_json::json!({"since": since, "rows": rows, "untracked": untracked}));
 }
 
 /// State of each repository of a Backtrail thread in development: LaunchAgents that belong to it and whether
@@ -787,6 +896,8 @@ fn main() {
     if a.get(1).map(String::as_str) == Some("config") { config_cmd(&a); return; }
     if a.get(1).map(String::as_str) == Some("projects") { projects_report(); return; }
     if a.get(1).map(String::as_str) == Some("security") { security_report(); return; }
+    if a.get(1).map(String::as_str) == Some("use") { use_cmd(&a); return; }
+    if a.get(1).map(String::as_str) == Some("usage") { usage_report(); return; }
     let mut c = open_db();
     let (nf, nc) = scan(&mut c);
     scan_inbox(&c);
