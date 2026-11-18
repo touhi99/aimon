@@ -92,6 +92,7 @@ struct UseRow: Codable, Identifiable {
     var name: String; var path: String; var apps: [String]
     var days7: Int; var days28: Int; var last: Int?
     var commits7: Int; var commits28: Int; var status: String
+    var weeks: [Int]; var days: [String]
     var id: String { path }
 }
 struct UseData: Codable { var since: Int?; var rows: [UseRow]; var untracked: [String] }

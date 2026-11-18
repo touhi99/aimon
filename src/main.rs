@@ -780,8 +780,14 @@ fn usage_report() {
             _ if c28 > 0 => "built_unused",
             _ => "idle",
         };
+        // the days used in the last year, and days used in each of the last 12 weeks (oldest first; the last week ends today)
+        let mut days: Vec<NaiveDate> = ts.iter().filter(|t| **t >= day_start(370)).filter_map(|t| Local.timestamp_opt(*t, 0).single()).map(|t| t.date_naive()).collect();
+        days.sort(); days.dedup();
+        let today = Local::now().date_naive();
+        let weeks: Vec<usize> = (0..12).rev().map(|k| days.iter().filter(|d| { let back = (today - **d).num_days(); back >= 7 * k && back < 7 * k + 7 }).count()).collect();
         rows.push(serde_json::json!({"name": name, "path": path.to_string_lossy(), "state": state, "apps": app_list,
-            "days7": days_in(&ts, 7), "days28": days_in(&ts, 28), "last": last, "commits7": c7, "commits28": c28, "status": status}));
+            "days7": days_in(&ts, 7), "days28": days_in(&ts, 28), "last": last, "commits7": c7, "commits28": c28, "status": status,
+            "weeks": weeks, "days": days.iter().map(|d| d.to_string()).collect::<Vec<_>>()}));
     }
     let rank = |s: &str| match s { "built_unused" => 0, "used" => 1, "quiet" => 2, "new" => 3, _ => 4 };
     rows.sort_by_key(|r| (rank(r["status"].as_str().unwrap_or("")), -r["days28"].as_i64().unwrap_or(0)));
