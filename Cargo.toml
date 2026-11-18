@@ -15,3 +15,53 @@ base64 = "0.23.1"
 [profile.release]
 opt-level = 3
 lto = true
+
+# Lints from BeautifulRust (lints/lints.toml), without the library-only ones (missing docs,
+# print_stdout and print_stderr, exhaustive_enums, unreachable_pub): both crates are command-line binaries.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"          # each unsafe op needs its own unsafe block
+missing_debug_implementations = "warn"   # every public type implements Debug
+rust_2018_idioms = { level = "warn", priority = -1 } # 2018-edition idioms, e.g. Formatter<'_>
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+unwrap_used = "warn"                     # use ?, or expect("why this cannot fail")
+expect_used = "allow"                    # expect with a reason is the sanctioned form
+panic_in_result_fn = "warn"              # a fn returning Result shouldn't also panic
+missing_assert_message = "warn"          # assert! says what went wrong (quiet inside #[test])
+
+allow_attributes = "warn"                # prefer #[expect] over #[allow] (needs rust-version 1.81+)
+allow_attributes_without_reason = "warn" # every suppression says why (needs rust-version 1.81+)
+
+undocumented_unsafe_blocks = "warn"      # // SAFETY: comment on every unsafe block
+multiple_unsafe_ops_per_block = "warn"   # one unsafe operation per block
+
+fn_params_excessive_bools = "warn"       # bool parameters: use an enum or two methods
+struct_excessive_bools = "warn"          # many bool fields: use an enum or bitflags
+clone_on_ref_ptr = "warn"                # write Rc::clone(&x) so cheap clones are visible
+redundant_clone = "warn"                 # a clone whose original is never used again
+rc_buffer = "warn"                       # Rc<String> / Rc<Vec<T>>: use Rc<str> / Rc<[T]>
+
+
+string_add = "warn"                      # build strings with format! or push_str, not +
+wildcard_imports = "warn"                # no glob imports (use super::* in tests is allowed)
+
+dbg_macro = "warn"
+todo = "warn"
+
+# Every `as` is flagged, including i64 -> f64 for averages and scores, which has no From impl. Lossy casts
+# stay covered by the cast_possible_truncation / cast_sign_loss / cast_possible_wrap lints below.
+as_conversions = "allow"
+cast_precision_loss = "allow"            # counts and token totals far below 2^52, used in f64 math
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+module_inception = "allow"               # a leaf module named after its main item is fine
+enum_glob_use = "allow"                  # use Enum::* inside a function that matches on it
+too_many_lines = "allow"                 # report and dispatch functions; splitting them is a restructure, not a lint fix
+many_single_char_names = "allow"         # short loop and tuple names in counting code
+similar_names = "allow"                  # paired names such as c_in / c_out are deliberate
