@@ -14,7 +14,7 @@ There are four tabs.
 - **Usage**: token counts and estimated API cost per project and per model, a daily and monthly spend chart, and Claude plan limits (5-hour session and weekly percentage). Optionally, Ollama cloud spend. Local models are counted as tokens only.
 - **Trace**: Claude Code activity from its session logs. Tool calls in the last 24 hours with counts and failures, recent failures with the command or file involved, and recent sessions with duration, model calls, tool calls and failures.
 - **Network**: outbound traffic per process, with open connections and remote hosts. AI-related processes are marked, and hosts that are not recognised are flagged. Hosts are resolved by reverse DNS, so entries are IP-level and not a full domain log.
-- **Projects** (optional, shown only when Backtrail is installed): one row per repository of a Backtrail thread whose state is `moving`, with the LaunchAgents that belong to it and whether they run, the TCP ports its processes listen on, and unpushed or uncommitted work. A red dot is added to the menu bar item while a LaunchAgent that should be running is not.
+- **Projects** (optional, shown only when Backtrail is installed): one row per repository of a Backtrail thread whose state is `moving`, with the LaunchAgents that belong to it and whether they run, the TCP ports its processes listen on, and unpushed or uncommitted work. A red dot is added to the menu bar item while a LaunchAgent that should be running is not. A **Use** switch in the header shows, for every project of a Backtrail thread that is not dropped, the days it was used in the last week, when it was last used, and its commits in the last four weeks. A project whose app was not opened for two weeks while it still got commits is marked orange.
 
 ## How it works
 
@@ -29,6 +29,14 @@ The Projects tab reads `config.json` and `backtrail.db` (read-only) in `~/Librar
 working directory or program is inside it; only agents with `KeepAlive` are counted, since scheduled agents are idle most of the
 time. A listening port belongs to a repository when the working directory of its process is inside it. Processes of other users
 are not visible. The tab was checked on one Mac only.
+
+Use is recorded in the `uses` table, at most once per project per hour:
+
+- When an app bundle that belongs to a project becomes the active app. A bundle belongs to a project when it is inside the repository, when its name matches the repository folder, or when the `apps` map in `config.json` names it (`{"apps": {"Kestrel.app": "kestrel/kestrel-app"}}`). Before the first recorded use, the bundle's last-used date from Spotlight is shown.
+- When the popover is opened (for aimon itself).
+- When a tool runs `aimon use <repository folder|thread name> [--via web|cli]`, for example a local web page on load.
+
+Projects with no app and no recorded use are listed as not tracked.
 
 ## Requirements
 
@@ -61,6 +69,7 @@ Only one instance runs at a time; a second launch exits immediately.
 - **Network tab**: lists outbound connections per process using `nettop` and `lsof`. Nothing is sent anywhere.
 - **Projects tab** (when Backtrail is present): reads the two Backtrail files above, runs `git status` and `git remote` in each repository, `launchctl list`, `plutil` on the files in
   `~/Library/LaunchAgents`, `lsof`, and `security.json` in its own support folder when present. Nothing is changed and nothing is sent anywhere.
+- **Use view**: the path of the active app and the time, stored in `aimon.db` only for app bundles that belong to a project; `mdls` for those bundles' last-used dates; `git rev-list --count` in each repository; `find` for app bundles in `/Applications`, `~/Applications` and the repositories.
 
 Cost figures are estimates from a price list. The provider's invoice is authoritative.
 

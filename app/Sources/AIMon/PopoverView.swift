@@ -27,6 +27,7 @@ struct PopoverView: View {
     private var maxScrollHeight: CGFloat { max(300, (NSScreen.main?.visibleFrame.height ?? 800) - 170) }
     @State private var openSession: String?
     @State private var openProc: String?
+    @AppStorage("projectsView") private var projectsView = ProcessInfo.processInfo.environment["AIMON_PROJECTS"] ?? "status"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -425,8 +426,11 @@ struct PopoverView: View {
     // MARK: Projects
     func projectsTab() -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let d = store.projects, d.root != nil {
-                title("Projects", trailing: securitySummary(d.projects))
+            if projectsView == "use" {
+                projectsHeader(store.usage.map { $0.rows.count == 1 ? "1 project" : "\($0.rows.count) projects" })
+                useView()
+            } else if let d = store.projects, d.root != nil {
+                projectsHeader(securitySummary(d.projects))
                 if d.projects.isEmpty { Text("No Backtrail thread in development has a repository.").font(.system(size: 12)).foregroundStyle(.secondary) }
                 ForEach(d.projects) { p in projectRow(p) }
                 if let age = d.projects.compactMap({ $0.security.flatMap(securityAge) }).min() {
@@ -438,6 +442,51 @@ struct PopoverView: View {
             }
         }
     }
+    /// The tab's header: its title, a Status | Use switch, and a short summary.
+    func projectsHeader(_ trailing: String?) -> some View {
+        HStack(spacing: 10) {
+            Text("PROJECTS").font(.system(size: 10, weight: .semibold)).tracking(1.0).foregroundStyle(.secondary)
+            Picker("", selection: $projectsView) { Text("Status").tag("status"); Text("Use").tag("use") }
+                .pickerStyle(.segmented).labelsHidden().controlSize(.mini).fixedSize()
+            Spacer()
+            if let trailing { Text(trailing).font(.system(size: 10)).foregroundStyle(.tertiary) }
+        }
+    }
+
+    // MARK: Use: how often each project is used, against how much is built in it
+    @ViewBuilder func useView() -> some View {
+        if let u = store.usage {
+            ForEach(u.rows) { useRow($0) }
+            if u.rows.isEmpty { Text("No project has a Mac app or recorded use yet.").font(.system(size: 12)).foregroundStyle(.secondary) }
+            let since = u.since.map { "Since " + Date(timeIntervalSince1970: TimeInterval($0)).formatted(.dateTime.day().month(.abbreviated)) } ?? "Tracking from today"
+            let shown = u.untracked.prefix(3).joined(separator: ", ") + (u.untracked.count > 3 ? " +\(u.untracked.count - 3)" : "")
+            Text(since + (u.untracked.isEmpty ? "" : " · not tracked: " + shown))
+                .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                .help("A day counts when the project's app is opened; a web page counts when it runs aimon use <repo>. Not tracked: " + u.untracked.joined(separator: ", "))
+        } else {
+            Text("Reading use…").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
+        }
+    }
+    func useRow(_ r: UseRow) -> some View {
+        let color: Color = switch r.status { case "used": .green; case "built_unused": .orange; case "quiet": .yellow; default: .gray.opacity(0.4) }
+        let last = r.last.map { Self.ago(Date(timeIntervalSince1970: TimeInterval($0))) }
+        let use = r.status == "built_unused" ? "not opened " + (last ?? "yet")
+            : r.status == "new" && last == nil ? "no use yet"
+            : "\(r.days7) of 7 days" + (last.map { " · last " + $0 } ?? "")
+        return HStack(spacing: 8) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(r.name).font(.system(size: 12, weight: .medium)).lineLimit(1).frame(width: 120, alignment: .leading)
+            Text(use).font(.system(size: 11)).monospacedDigit().foregroundStyle(r.status == "built_unused" ? Color.orange : Color.secondary).lineLimit(1)
+            Spacer()
+            Text(r.commits28 == 0 ? "no commits" : "\(r.commits28) commit\(r.commits28 == 1 ? "" : "s") / 4 wk")
+                .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+        }.help("\(r.days28) of the last 28 days used · \(r.commits7) commits this week\n" + r.path)
+    }
+    static func ago(_ d: Date) -> String {
+        let days = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: d), to: Calendar.current.startOfDay(for: Date())).day ?? 0
+        return days == 0 ? "today" : days == 1 ? "yesterday" : days < 14 ? "\(days) days ago" : "\(days / 7) weeks ago"
+    }
+
     func projectRow(_ p: ProjRow) -> some View {
         let agents = p.running + p.down.count
         var service = agents > 0 ? "\(p.running)/\(agents) running" : ""

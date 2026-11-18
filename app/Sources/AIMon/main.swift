@@ -22,6 +22,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onChange = { [weak self] in self?.updateBar() }
         updateBar()
         store.start()
+        // Use of a project's Mac app: one event per activation, no polling. Only bundles that belong to a project are recorded.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
+            guard let path = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleURL?.path else { return }
+            MainActor.assumeIsolated {
+                guard let self, self.store.trackedApps.contains(path) else { return }
+                self.store.recordUse(path)
+            }
+        }
     }
 
     func updateBar() {
@@ -62,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let b = item.button else { return }
         if popover.isShown { popover.performClose(nil) } else {
             store.refresh()
+            store.recordUse("aimon")   // a menu bar app gets no activation event, so opening the popover counts as use
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

@@ -87,6 +87,14 @@ struct ProjRow: Codable, Identifiable {
 /// Result of an external security scan of one repository (security.json in the aimon support folder).
 struct Sec: Codable { var secrets: Int; var advisories: Int; var checked: String? }
 struct ProjData: Codable { var root: String?; var projects: [ProjRow] }
+/// One project in the Use view (`aimon usage`): days used, last use, commits, and a status.
+struct UseRow: Codable, Identifiable {
+    var name: String; var path: String; var apps: [String]
+    var days7: Int; var days28: Int; var last: Int?
+    var commits7: Int; var commits28: Int; var status: String
+    var id: String { path }
+}
+struct UseData: Codable { var since: Int?; var rows: [UseRow]; var untracked: [String] }
 
 enum Fmt {
     static func bytes(_ n: Int) -> String {
@@ -141,6 +149,10 @@ final class Store: ObservableObject {
     @Published var trace: TraceData?
     @Published var net: NetData?
     @Published var projects: ProjData?
+    @Published var usage: UseData?
+    private var usageAt = Date.distantPast
+    /// App bundles that belong to a project; only their activations are recorded.
+    var trackedApps: Set<String> { Set(usage?.rows.flatMap { $0.apps } ?? []) }
     var onChange: (() -> Void)?
     private var timer: Timer?
 
@@ -185,6 +197,12 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Records one use of a project (`aimon use`); the core keeps at most one row per key per hour.
+    func recordUse(_ key: String) {
+        let bin = binary
+        Task.detached { _ = Store.run(bin, ["use", key, "--via", "app"]) }
+    }
+
     nonisolated private static func run(_ bin: String, _ args: [String]) -> Data? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
@@ -214,6 +232,11 @@ final class Store: ObservableObject {
             }
             let p = Store.run(bin, ["projects"]).flatMap { try? JSONDecoder().decode(ProjData.self, from: $0) }
             await MainActor.run { if let p { self.projects = p; self.onChange?() } }
+            // usage runs git and Spotlight per project, so it is read at most every five minutes
+            if await MainActor.run(body: { Date().timeIntervalSince(self.usageAt) > 300 }) {
+                let u = Store.run(bin, ["usage"]).flatMap { try? JSONDecoder().decode(UseData.self, from: $0) }
+                await MainActor.run { if let u { self.usage = u; self.usageAt = Date() } }
+            }
             // sequential on purpose: every run scans logs and writes the same database
             let n = Store.run(bin, ["net"]).flatMap { try? JSONDecoder().decode(NetData.self, from: $0) }
             let t = Store.run(bin, ["trace"]).flatMap { try? JSONDecoder().decode(TraceData.self, from: $0) }
