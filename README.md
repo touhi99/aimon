@@ -34,7 +34,7 @@ Use is recorded in the `uses` table, at most once per project per hour:
 
 - When an app bundle that belongs to a project becomes the active app. A bundle belongs to a project when it is inside the repository, when its name matches the repository folder, or when the `apps` map in `config.json` names it (`{"apps": {"Kestrel.app": "kestrel/kestrel-app"}}`). Before the first recorded use, the bundle's last-used date from Spotlight is shown.
 - When the popover is opened (for aimon itself).
-- When a tool runs `aimon use <repository folder|thread name> [--via web|cli]`, for example a local web page on load.
+- When a tool runs `aimon use <repository folder|thread name> [--via web|cli]`, for example a local web page on load. Repository folders listed under `web` in `config.json` (`{"web": ["my-site"]}`) count as tracked before their first recorded use.
 
 Projects with no app and no recorded use are listed as not tracked.
 

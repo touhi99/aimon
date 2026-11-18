@@ -763,7 +763,8 @@ fn usage_report() {
         keys.push(rel.clone());
         keys.push(name.clone());
         let mut ts = rows_of(&keys);
-        if app_list.is_empty() && ts.is_empty() { untracked.push(name.clone()); continue; }
+        let web = cfg["web"].as_array().map_or(false, |w| w.iter().any(|x| x.as_str() == Some(rel.as_str())));
+        if app_list.is_empty() && ts.is_empty() && !web { untracked.push(name.clone()); continue; }
         // Spotlight's last-used date of the app bundles, for the time before aimon recorded anything
         let seen = app_list.iter().filter_map(|a| DateTime::parse_from_str(out_of("mdls", &["-raw", "-name", "kMDItemLastUsedDate", a]).trim(), "%Y-%m-%d %H:%M:%S %z").ok()).map(|d| d.timestamp()).max();
         let last = ts.iter().copied().max().into_iter().chain(seen).max();
