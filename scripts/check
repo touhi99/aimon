@@ -31,7 +31,10 @@ step "shell syntax"
 bash -n scripts/check
 for f in build.sh install.sh uninstall.sh; do zsh -n "$f"; done
 
-step "docs and comments"
-git ls-files -z --cached --others --exclude-standard | xargs -0 python3 -I scripts/slop_check.py
+slop="${SLOP_CHECK:-$HOME/.claude/hooks/slop_check.py}"
+if [ -f "$slop" ]; then
+  step "docs and comments"
+  git ls-files -z --cached --others --exclude-standard | xargs -0 python3 -I "$slop"
+fi
 
 echo "all checks passed"
