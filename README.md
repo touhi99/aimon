@@ -1,43 +1,28 @@
 # AI Project Monitor
 
-A macOS menu bar app for monitoring AI tooling on a Mac: model usage and cost, Claude Code sessions and tool calls, network traffic per process, and the state of local project repositories. It is meant for tracking cost, usage and traffic across different projects in a personal toolkit.
+A macOS menu bar app that shows model usage and cost, Claude Code sessions and tool calls, network traffic per process, and the state of local project repositories.
 
 <p align="center">
 <img src="docs/popover-dark.png" alt="The Spend tab" width="420">
 <img src="docs/projects-dark.png" alt="The Projects tab" width="420">
 </p>
 
-## Features
+## Tabs
 
-There are five tabs.
+- **Spend**: tokens and estimated cost per project and model, plan limits.
+- **Trace**: Claude Code tool calls, failures and sessions.
+- **Network**: outbound connections per process and host.
+- **Projects**: LaunchAgents, listening ports and unpushed work per repository (needs Backtrail).
+- **Use**: when each project was last used (needs Backtrail).
 
-- **Spend**: token counts and estimated API cost per project and per model, a daily and monthly spend chart, and Claude plan limits (5-hour session and weekly percentage). Optionally, Ollama cloud spend. Local models are counted as tokens only.
-- **Trace**: Claude Code activity from its session logs. Tool calls in the last 24 hours with counts and failures, recent failures with the command or file involved, and recent sessions with duration, model calls, tool calls and failures.
-- **Network**: outbound traffic per process, with open connections and remote hosts. AI-related processes are marked, and hosts that are not recognised are flagged. Hosts are resolved by reverse DNS, so entries are IP-level and not a full domain log.
-- **Projects** (optional, shown only when Backtrail is installed): one row per repository of a Backtrail thread whose state is `moving`, with the LaunchAgents that belong to it and whether they run, the TCP ports its processes listen on, and unpushed or uncommitted work. A red dot is added to the menu bar item while a LaunchAgent that should be running is not.
-- **Use** (shown with Projects): every project of a Backtrail thread that is not dropped, grouped as in use (used in the last 7 days), going stale (not used for over a week, or not for two weeks while it still got commits), not used lately, and not used yet. Each project has a 12-week strip (one square per week, darker for more days used); a click opens its last year as a day grid.
+Details: [docs/tabs.md](docs/tabs.md).
 
 ## How it works
 
-Usage comes from two sources:
-
-1. **Claude Code.** Session logs in `~/.claude/projects` are read automatically. The project is the last folder of the working directory.
-2. **The inbox.** Any other tool or application appends one JSON line per model call to a file in the inbox folder (see below).
-
-Usage is stored in a local SQLite database, `~/Library/Application Support/aimon/aimon.db`. The Trace tab reads the same Claude Code logs. The Network tab samples `nettop` and `lsof` while the app runs.
-
-The Projects tab reads `config.json` and `backtrail.db` (read-only) in `~/Library/Application Support/Backtrail`: the `repos` map gives each repository's folder and thread, and the thread state comes from the database. The tab is hidden when these files are absent. A LaunchAgent in `~/Library/LaunchAgents` belongs to a repository when its
-working directory or program is inside it; only agents with `KeepAlive` are counted, since scheduled agents are idle most of the
-time. A listening port belongs to a repository when the working directory of its process is inside it. Processes of other users
-are not visible. The tab was checked on one Mac only.
-
-Use is recorded in the `uses` table and kept, at most once per project per hour:
-
-- When an app bundle that belongs to a project becomes the active app. A bundle belongs to a project when it is inside the repository, when its name matches the repository folder, or when the `apps` map in `config.json` names it (`{"apps": {"Kestrel.app": "kestrel/kestrel-app"}}`). Before the first recorded use, the bundle's last-used date from Spotlight is shown.
-- When the popover is opened (for aimon itself).
-- When a tool runs `aimon use <repository folder|thread name> [--via web|cli]`, for example a local web page on load. Repository folders listed under `web` in `config.json` (`{"web": ["my-site"]}`) count as tracked before their first recorded use.
-
-Projects with no app and no recorded use are listed as not tracked.
+- Claude Code session logs in `~/.claude/projects` supply usage. The project is the last folder of the working directory.
+- Other tools append one JSON line per model call to the inbox folder (see below).
+- Usage is stored in `~/Library/Application Support/aimon/aimon.db`.
+- The Network tab samples `nettop` and `lsof` while the app runs.
 
 ## Requirements
 
@@ -50,46 +35,30 @@ Projects with no app and no recorded use are listed as not tracked.
 ```
 git clone <repository-url>
 cd aimon
-./build.sh        # builds the Rust core and the Swift app into AIMon.app
-./install.sh      # installs a LaunchAgent: starts AI Project Monitor now and at login
+./build.sh        # builds AIMon.app
+./install.sh      # installs a LaunchAgent that starts the app at login
 ```
 
-`./uninstall.sh` stops AI Project Monitor and removes the LaunchAgent. The data folder is left in place.
-Only one instance runs at a time; a second launch exits immediately.
+`./uninstall.sh` removes the LaunchAgent and leaves the data folder. A second launch exits immediately.
 
-## What AI Project Monitor reads and sends
+## Data read and sent
 
-- **Claude Code logs**: model name, token counts, timestamp and working folder of each call. Prompts and responses are not read.
-- **Claude plan limits** (off by default): enable with the button in the Usage tab or `aimon config claude_limits on`.
-  When enabled, AI Project Monitor reads the Claude Code login token from the macOS Keychain and sends it to
-  `api.anthropic.com/api/oauth/usage`, an undocumented endpoint that may change. macOS asks for permission to read the Keychain item;
-  if it is refused or missing, AI Project Monitor does not ask again for a day. Disable with `aimon config claude_limits off`.
-- **Ollama cloud spend** (off by default): enable with the button in the Usage tab or `aimon config ollama on`.
-  When enabled, and if `ollama signin` was run, AI Project Monitor signs a request to `ollama.com/api/usage` with the key in `~/.ollama/id_ed25519`.
-  The key is used locally for signing and is not transmitted. This endpoint is also undocumented.
-- **Network tab**: lists outbound connections per process using `nettop` and `lsof`. Nothing is sent anywhere.
-- **Projects tab** (when Backtrail is present): reads the two Backtrail files above, runs `git status` and `git remote` in each repository, `launchctl list`, `plutil` on the files in
-  `~/Library/LaunchAgents`, `lsof`, and `security.json` in its own support folder when present. Nothing is changed and nothing is sent anywhere.
-- **Use tab**: the path of the active app and the time, stored in `aimon.db` only for app bundles that belong to a project; `mdls` for those bundles' last-used dates; `git rev-list --count` in each repository; `find` for app bundles in `/Applications`, `~/Applications` and the repositories.
+- **Claude Code logs**: model, token counts, timestamp and working folder per call.
+- **Plan limits** (off by default, `aimon config claude_limits on`): reads the Claude Code token from the macOS Keychain and sends it to `api.anthropic.com/api/oauth/usage`, an undocumented endpoint.
+- **Ollama cloud spend** (off by default, `aimon config ollama on`): signs a request to `ollama.com/api/usage` with `~/.ollama/id_ed25519`. The key stays local.
+- **Projects and Use tabs**: the Backtrail files in `~/Library/Application Support/Backtrail`, `git`, `launchctl`, `plutil`, `lsof`, `mdls` and `find`.
 
-Cost figures are estimates from a price list. The provider's invoice is authoritative.
-
-## Security results (optional)
-
-A scanner can write `~/Library/Application Support/aimon/security.json`. The Projects tab matches its entries to repositories by absolute path and shows a line under a repository with secrets or dependency advisories, or when the scan is older than 10 days. AI Project Monitor only reads the file; it does not run a scanner. `aimon security` prints the same results as a table.
-
-```json
-{"checked": "2026-11-17T09:00:00+01:00", "repos": [{"path": "/Users/name/code/app", "secrets": 0, "advisories": 2}]}
-```
+Cost figures are estimates from a price list.
 
 ## Reporting usage
 
-Other tools and applications append one JSON line per model call to a file in `~/Library/Application Support/aimon/inbox/`:
+Append one JSON line per model call to `~/Library/Application Support/aimon/inbox/`:
 
 ```json
 {"project":"my-app","model":"gpt-5","in":1200,"out":300,"cost":0.004}
 ```
 
-- [docs/inbox.md](docs/inbox.md): fields, `aimon log`, folder grouping and prices
-- [docs/proxy.md](docs/proxy.md): optional proxy for applications whose code cannot be changed (experimental)
-- [docs/development.md](docs/development.md): checking totals and regenerating screenshots
+- [docs/inbox.md](docs/inbox.md): fields, `aimon log`, prices
+- [docs/proxy.md](docs/proxy.md): proxy for applications whose code cannot be changed (experimental)
+- [docs/security.md](docs/security.md): optional scan results shown in Projects
+- [docs/development.md](docs/development.md): checking totals, regenerating screenshots
