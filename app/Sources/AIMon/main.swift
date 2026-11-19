@@ -9,11 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timeTimer: Timer?
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        // Single instance: a second copy would add another menu bar item and double all the log scanning.
         let id = Bundle.main.bundleIdentifier ?? "dev.aimon.app"
         let me = ProcessInfo.processInfo.processIdentifier
         if NSRunningApplication.runningApplications(withBundleIdentifier: id).contains(where: { $0.processIdentifier != me }) {
-            exit(0)   // code 0 so the LaunchAgent (KeepAlive on failure only) does not relaunch it
+            exit(0)
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
@@ -24,7 +23,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateBar()
         store.start()
         startTimeTracking()
-        // Use of a project's Mac app: one event per activation, no polling. Only bundles that belong to a project are recorded.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let path = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleURL?.path else { return }
             MainActor.assumeIsolated {
@@ -34,8 +32,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Foreground time of a project's app: every 15 s, if the frontmost app belongs to a project and the keyboard or
-    /// mouse was used in the last two minutes, those seconds are added to it.
     func startTimeTracking() {
         timeTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -50,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func updateBar() {
         guard let b = item.button else { return }
         guard let s = store.snap else { b.title = "AI Monitor"; return }
-        if s.limits.source == "none" || s.limits.source == "off" {   // plan limits off or no Claude plan found: show money (or tokens) instead of an empty ring
+        if s.limits.source == "none" || s.limits.source == "off" {
             let f = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             b.image = nil
             let t = NSMutableAttributedString(string: s.api.today >= 0.005 ? Fmt.money(s.api.today) : "AI Monitor", attributes: [.font: f])
@@ -60,7 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let ses = s.limits.session?.pct ?? 0, wk = s.limits.weekly?.pct ?? 0
-        // Show the 5-hour session; switch to the week only when the week is the one about to run out.
         let useWeek = wk >= 85 && wk > ses
         let pct = useWeek ? wk : ses
         let renderer = ImageRenderer(content: RingIcon(fraction: pct / 100))
@@ -74,7 +69,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.toolTip = "Claude Pro: \(Int(ses.rounded()))% of the 5-hour session used, \(Int(wk.rounded()))% of the week.\nAPI spend today: \(Fmt.money(s.api.today))" + stoppedNote
     }
 
-    /// LaunchAgents of the listed projects that should be running and are not.
     private var stopped: [String] { store.projects?.projects.flatMap { $0.down } ?? [] }
     private var stoppedNote: String { stopped.isEmpty ? "" : "\nStopped: " + stopped.joined(separator: ", ") }
     private func markStopped(_ t: NSMutableAttributedString, _ font: NSFont) {
@@ -85,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let b = item.button else { return }
         if popover.isShown { popover.performClose(nil) } else {
             store.refresh()
-            store.recordUse("aimon")   // a menu bar app gets no activation event, so opening the popover counts as use
+            store.recordUse("aimon")
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
@@ -109,7 +103,6 @@ MainActor.assumeIsolated {
         let store = Store()
         store.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            // Draw the real view in an off-screen window: SwiftUI's ImageRenderer leaves ScrollView and Picker blank.
             for (name, scheme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
                 let host = NSHostingView(rootView: PopoverView(store: store))
                 let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)

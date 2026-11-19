@@ -1,5 +1,4 @@
 #!/bin/zsh
-# Installs the built AIMon.app as a LaunchAgent that starts at login. Run ./build.sh first.
 set -e
 cd "$(dirname "$0")"
 [ -d AIMon.app ] || { echo "AIMon.app not found. Run ./build.sh first."; exit 1; }

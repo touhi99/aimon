@@ -21,13 +21,12 @@ struct PopoverView: View {
     @State private var hoverDay: Date?
     @State private var hoverHour: Date?
     @State private var hoverOllama: Date?
-    @State private var tab = Int(ProcessInfo.processInfo.environment["AIMON_TAB"] ?? "") ?? 0   // first tab shown; set for screenshots
+    @State private var tab = Int(ProcessInfo.processInfo.environment["AIMON_TAB"] ?? "") ?? 0
     @State private var contentH: CGFloat = 400
-    // leave room for the menu bar, the tab picker, the footer and padding
     private var maxScrollHeight: CGFloat { max(300, (NSScreen.main?.visibleFrame.height ?? 800) - 170) }
     @State private var openSession: String?
     @State private var openProc: String?
-    @State private var openUse = ProcessInfo.processInfo.environment["AIMON_OPEN"]   // a project path shown open; set for screenshots
+    @State private var openUse = ProcessInfo.processInfo.environment["AIMON_OPEN"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -73,7 +72,6 @@ struct PopoverView: View {
         }
     }
 
-    // MARK: Claude plan limits
     func limits(_ s: Snapshot) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             title(s.limits.source == "off" ? "Claude plan" : "Claude Pro", trailing: s.limits.source == "live" ? "live" : s.limits.source == "stale" ? "stale" : s.limits.source == "off" ? "off" : "no data")
@@ -107,7 +105,6 @@ struct PopoverView: View {
         }
     }
 
-    // MARK: Ollama cloud spend
     func ollamaPlan(_ s: Snapshot) -> some View {
         let o = s.ollama_limits
         let cal = Calendar.current
@@ -160,7 +157,6 @@ struct PopoverView: View {
         }
     }
 
-    // MARK: API money
     func api(_ s: Snapshot) -> some View {
         let a = s.api
         let cal = Calendar.current
@@ -231,7 +227,6 @@ struct PopoverView: View {
         }
     }
 
-    // MARK: Activity (tokens, not money)
     func activity(_ s: Snapshot) -> some View {
         let now = Date()
         struct P: Identifiable { var id: Int; var t: Date; var v: Int; var kind: String }
@@ -282,7 +277,6 @@ struct PopoverView: View {
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    // MARK: Projects / models
     func projects(_ s: Snapshot) -> some View {
         let mx = Double(max(s.projects.map { $0.tokens }.max() ?? 1, 1))
         return VStack(alignment: .leading, spacing: 7) {
@@ -312,7 +306,6 @@ struct PopoverView: View {
         }
     }
 
-    // MARK: Trace
     func traceTab() -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let t = store.trace {
@@ -382,7 +375,6 @@ struct PopoverView: View {
         }.padding(.leading, 15).help(f.arg + "\n" + f.msg)
     }
 
-    // MARK: Network
     func networkTab() -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let n = store.net {
@@ -424,7 +416,6 @@ struct PopoverView: View {
         }
     }
 
-    // MARK: Projects
     func projectsTab() -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let d = store.projects, d.root != nil {
@@ -440,11 +431,9 @@ struct PopoverView: View {
             }
         }
     }
-    // MARK: Use: which projects are used, grouped, with a 12-week strip; a click shows the year as a day grid
     func useTab() -> some View {
         VStack(alignment: .leading, spacing: 18) {
             if let u = store.usage {
-                // bars follow time once any has been recorded; until then they follow opens
                 let byTime = u.rows.contains { $0.week_secs.contains { $0 > 0 } }
                 let weekVal: (UseRow) -> [Int] = { byTime ? $0.week_secs : $0.weeks }
                 let dayVal: (UseRow) -> [Int] = { byTime ? $0.day_secs : $0.counts }
@@ -514,7 +503,6 @@ struct PopoverView: View {
             if openUse == r.id { yearGrid(r, start: start, maxDay: maxDay, byTime: byTime) }
         }
     }
-    /// The last year as a day grid: one column per week (Monday on top), one square per day.
     func yearGrid(_ r: UseRow, start tracked: Date, maxDay: Int, byTime: Bool) -> some View {
         let cal = Calendar(identifier: .iso8601)
         let today = cal.startOfDay(for: Date())
@@ -550,7 +538,6 @@ struct PopoverView: View {
         }
         .padding(10).background(Color.gray.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
     }
-    /// 0...1 shade for a count against the busiest week or day of any project; a square root keeps small counts visible.
     static func weight(_ n: Int, _ top: Int) -> Double { (Double(n) / Double(top)).squareRoot() }
     static func duration(_ secs: Int) -> String {
         if secs < 60 { return secs == 0 ? "0m" : "<1m" }
@@ -595,7 +582,6 @@ struct PopoverView: View {
             }
         }.help(p.path)
     }
-    /// Header text: the scan result across all listed repositories, or the tab's scope when no scan file exists.
     func securitySummary(_ rows: [ProjRow]) -> String {
         let scanned = rows.compactMap { $0.security }
         if scanned.isEmpty { return "in development in Backtrail" }
@@ -604,7 +590,6 @@ struct PopoverView: View {
         if adv > 0 { return "\(adv) advisor\(adv == 1 ? "y" : "ies") open" }
         return "security scan clean"
     }
-    /// A line for a repository whose last scan found something or is out of date; nil when clean and recent.
     func securityNote(_ s: Sec) -> (String, Color)? {
         if s.secrets > 0 { return ("\(s.secrets) secret\(s.secrets == 1 ? "" : "s") found in git history", .red) }
         if s.advisories > 0 { return ("\(s.advisories) dependency advisor\(s.advisories == 1 ? "y" : "ies")", .orange) }

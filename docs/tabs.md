@@ -30,7 +30,7 @@ Shown with Projects. Every project of a Backtrail thread that is not dropped, gr
 
 Use is stored in the `uses` table, at most once per project per 10 minutes, when:
 
-- An app bundle that belongs to a project becomes the active app. A bundle belongs to a project when it is inside the repository, when its name matches the repository folder, or when the `apps` map in `config.json` names it (`{"apps": {"Kestrel.app": "kestrel/kestrel-app"}}`). Before the first recorded use, the bundle's last-used date from Spotlight is shown.
+- An app bundle that belongs to a project becomes the active app. A bundle belongs to a project when it is inside the repository, when its name matches the repository folder, or when the `apps` map in `config.json` names it (`{"apps": {"Demo.app": "demo/demo-app"}}`). Before the first recorded use, the bundle's last-used date from Spotlight is shown.
 - The popover is opened (for aimon itself).
 - A tool runs `aimon use <repository folder|thread name> [--via web|cli]`. Repository folders listed under `web` in `config.json` (`{"web": ["my-site"]}`) count as tracked before their first recorded use.
 

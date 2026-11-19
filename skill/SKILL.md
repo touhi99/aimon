@@ -31,7 +31,7 @@ The built-in usage text only lists `today|by-project|by-model|scan`; the other c
 
 Output is `{"procs":[...],"since":<unix ts>}`. Per process:
 
-- `name`: `<binary> · <project folder>`, for example `python3.12 · kestrel-agents`.
+- `name`: `<binary> · <project folder>`, for example `python3.12 · my-app`.
 - `in`, `out`: TCP bytes received and sent by the process since `since` (from `nettop`), including connections
   that have since closed, so a process with `conns: 0` can still have large totals.
 - `conns` and `detail`: open outbound TCP connections right now, with `host`, `ip`, `port`, `up` (connection age) and `pid`.
