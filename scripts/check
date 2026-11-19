@@ -1,0 +1,37 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+step() { printf '== %s\n' "$1"; }
+
+step "rustfmt"
+cargo fmt --check
+
+step "clippy"
+cargo clippy --all-targets --quiet -- -D warnings
+
+step "tests"
+cargo test --quiet
+
+if command -v swift >/dev/null && [ "$(uname)" = Darwin ]; then
+  step "swift"
+  (cd app && swift build --quiet)
+fi
+
+step "ruff format"
+uvx ruff@0.14.5 format --check proxy
+
+step "ruff lint"
+uvx ruff@0.14.5 check proxy
+
+step "mypy"
+uvx mypy==1.18.2 --strict --python-version 3.9 proxy
+
+step "shell syntax"
+bash -n scripts/check
+for f in build.sh install.sh uninstall.sh; do zsh -n "$f"; done
+
+step "docs and comments"
+git ls-files -z --cached --others --exclude-standard | xargs -0 python3 -I scripts/slop_check.py
+
+echo "all checks passed"

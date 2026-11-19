@@ -7,7 +7,6 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-/// One `calls` row: ts, source, project, model, inp, out, cread, cw5, cw1, kind, `cost_override`.
 type CallRow = (
     i64,
     String,
@@ -42,12 +41,10 @@ fn open_db() -> Connection {
         )
         .expect("write to database");
     }
-    // v3 adds the tools table: forget file offsets once so old logs are re-read for tool calls (calls upsert, so no double counting)
     if ver < 3 {
         c.execute_batch("DROP TABLE IF EXISTS files; PRAGMA user_version=3;")
             .expect("write to database");
     }
-    // v4 stores what a tool was called with and why it failed
     if ver < 4 {
         c.execute_batch("DROP TABLE IF EXISTS files; PRAGMA user_version=4;")
             .expect("write to database");
@@ -77,8 +74,6 @@ fn open_db() -> Connection {
     c
 }
 
-/// Inbox: any script can append JSON lines to ~/Library/Application Support/aimon/inbox/*.jsonl, e.g.
-/// {"project":"my-app","model":"gpt-5","in":1200,"out":300,"cost":0.004}  (ts, `cache_read`, cost are optional).
 fn scan_inbox(c: &Connection) {
     let dir = data_dir().join("inbox");
     fs::create_dir_all(&dir).ok();
@@ -155,7 +150,6 @@ fn scan_inbox(c: &Connection) {
     tx.commit().expect("commit transaction");
 }
 
-/// `aimon log --project X --model M --in N --out N [--cost USD] [--local]` appends one line to the inbox.
 fn log_cmd(a: &[String]) {
     use std::io::Write;
     let arg = |k: &str| {
@@ -193,8 +187,6 @@ fn log_cmd(a: &[String]) {
     eprintln!("logged to {}", dir.join("manual.jsonl").display());
 }
 
-/// Project name for a working directory: a folder rule from aliases.json ("/path/to/repo" or "~/path/to/repo",
-/// covers everything under it), otherwise the last folder name.
 fn project_for(cwd: &str, aliases: &HashMap<String, String>) -> String {
     for (k, name) in aliases {
         let base = match k.strip_prefix("~/") {
@@ -209,11 +201,11 @@ fn project_for(cwd: &str, aliases: &HashMap<String, String>) -> String {
     repo_name(cwd)
 }
 
-/// Name of the git repository a working directory is in (the nearest folder above it with a `.git`). A folder
-/// outside any repository that holds repositories is a workspace and is named "<folder> (workspace)"; any other
-/// folder is named by its last component.
 fn repo_name(cwd: &str) -> String {
-    let last = |p: &Path| p.file_name().map_or_else(|| "?".into(), |s| s.to_string_lossy().to_string());
+    let last = |p: &Path| {
+        p.file_name()
+            .map_or_else(|| "?".into(), |s| s.to_string_lossy().to_string())
+    };
     if cwd.is_empty() {
         return "?".into();
     }
@@ -260,7 +252,6 @@ fn scan(c: &mut Connection) -> (usize, usize) {
         if len <= off {
             continue;
         }
-        // The file can vanish or become unreadable between listing and reading; skip it this round.
         let Ok(mut f) = File::open(&p) else { continue };
         if f.seek(SeekFrom::Start(off)).is_err() {
             continue;
@@ -277,7 +268,7 @@ fn scan(c: &mut Connection) -> (usize, usize) {
             }
             if !line.ends_with('\n') {
                 break;
-            } // partial line, retry next scan
+            }
             pos += n as u64;
             if (line.contains("\"tool_use\"") || line.contains("\"is_error\":true"))
                 && !line.contains("api-request-blob")
@@ -315,7 +306,6 @@ fn scan(c: &mut Connection) -> (usize, usize) {
             let cwd = d.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
             let project = project_for(cwd, &aliases);
             let sess = d.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-            // streaming repeats the same message id; keep the row with the most output tokens
             let kind = if model.starts_with("claude-") {
                 "claude_sub"
             } else {
@@ -345,7 +335,6 @@ struct Price {
     w1: f64,
 }
 fn load_prices() -> HashMap<String, Price> {
-    // Built-in list first, then a user-supplied ~/Library/Application Support/aimon/prices.json adds models and overrides entries.
     let mut m = HashMap::new();
     let user = fs::read_to_string(data_dir().join("prices.json"))
         .ok()
@@ -406,7 +395,7 @@ fn report(c: &Connection, since: i64, group: &str) {
     for r in rows.flatten() {
         let (proj, model, n, i, o, cr, w5, w1, over, has_over) = r;
         let (cost, un) = match prices.get(&model) {
-            _ if has_over => (over.unwrap_or(0.0), 0), // the call reported its own cost
+            _ if has_over => (over.unwrap_or(0.0), 0),
             Some(p) => (
                 (i as f64 * p.i
                     + o as f64 * p.o
@@ -507,8 +496,6 @@ fn cost_of(
     })
 }
 
-/// Optional features that use a login on this Mac. All are off until the user turns them on:
-/// `aimon config claude_limits on` / `aimon config ollama on`. Stored in config.json next to the database.
 fn option_on(key: &str) -> bool {
     fs::read_to_string(data_dir().join("config.json"))
         .ok()
@@ -542,9 +529,6 @@ fn config_cmd(a: &[String]) {
     println!("{k} is {v}");
 }
 
-/// Claude subscription limits. Live from Anthropic's usage endpoint using Claude Code's own login,
-/// cached for 5 min (the endpoint rate-limits, 429); on failure falls back to the last live copy, then to the copy
-/// Claude Code keeps in ~/.claude.json (both marked stale). Windows whose reset time has passed are dropped.
 fn fetch_limits() -> Value {
     use serde_json::json;
     if !option_on("claude_limits") {
@@ -560,14 +544,12 @@ fn fetch_limits() -> Value {
             return v.clone();
         }
     }
-    // After a failed request (429 or network) wait 5 min before asking again, so refreshes do not keep the limit active.
     let backoff = data_dir().join("limits_backoff");
     let backing_off = fs::metadata(&backoff)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
         .is_some_and(|e| e.as_secs() < 300);
-    // Ask the Keychain at most once a day: if the item is missing (API-key user) or access was refused, don't re-prompt every refresh.
     let marker = data_dir().join("no_keychain");
     let skip = fs::metadata(&marker)
         .and_then(|m| m.modified())
@@ -643,7 +625,6 @@ fn fetch_limits() -> Value {
     drop_reset_windows(out, now)
 }
 
-/// A window whose `resets_at` is in the past describes a finished period; its percentage is meaningless, so remove it.
 fn drop_reset_windows(mut v: Value, now: i64) -> Value {
     for k in ["session", "weekly", "weekly_sonnet", "weekly_opus"] {
         let past = v[k]["resets_at"]
@@ -657,7 +638,6 @@ fn drop_reset_windows(mut v: Value, now: i64) -> Value {
     v
 }
 
-/// Old folder names -> current project names. Editable in ~/Library/Application Support/aimon/aliases.json.
 fn load_aliases() -> HashMap<String, String> {
     let mut m: HashMap<String, String> = HashMap::new();
     if let Some(v) = fs::read_to_string(data_dir().join("aliases.json"))
@@ -675,7 +655,6 @@ fn load_aliases() -> HashMap<String, String> {
     m
 }
 
-/// Seed of an unencrypted OpenSSH ed25519 private key ("openssh-key-v1" container).
 fn ed25519_seed(pem: &str) -> Option<[u8; 32]> {
     fn string(b: &[u8]) -> Option<(&[u8], &[u8])> {
         let n = u32::from_be_bytes(b.get(..4)?.try_into().ok()?) as usize;
@@ -688,25 +667,22 @@ fn ed25519_seed(pem: &str) -> Option<[u8; 32]> {
     let (cipher, rest) = string(rest)?;
     if cipher != b"none" {
         return None;
-    } // encrypted keys are not supported
+    }
     let (_kdf, rest) = string(rest)?;
     let (_kdfopts, rest) = string(rest)?;
-    let rest = rest.get(4..)?; // number of keys
+    let rest = rest.get(4..)?;
     let (_pubkey, rest) = string(rest)?;
     let (private, _) = string(rest)?;
-    let p = private.get(8..)?; // two check ints
+    let p = private.get(8..)?;
     let (kind, p) = string(p)?;
     if kind != b"ssh-ed25519" {
         return None;
     }
     let (_pub, p) = string(p)?;
-    let (sk, _) = string(p)?; // 32-byte seed + 32-byte public key
+    let (sk, _) = string(p)?;
     sk.get(..32)?.try_into().ok()
 }
 
-/// Ollama cloud spend. GET ollama.com/api/usage, signed with the same ed25519 key `ollama signin` uses
-/// (~/.`ollama/id_ed25519`), so no API key is needed. Undocumented endpoint: any failure degrades to "error".
-/// The subscription session/weekly percentages live only behind the browser login (ollama.com/dashboard).
 fn fetch_ollama() -> Value {
     use base64::{engine::general_purpose::STANDARD as B64, Engine};
     use ed25519_dalek::{Signer, SigningKey};
@@ -821,13 +797,12 @@ fn snapshot(c: &Connection) {
         .map(|row| row.expect("decode query row"))
         .collect();
 
-    let mut hourly = vec![[0i64; 3]; 24]; // tokens: claude_sub, ollama_sub, api+local
+    let mut hourly = vec![[0i64; 3]; 24];
     let mut daily_tokens = vec![0i64; 14];
     let mut api_daily = vec![0f64; 14];
     let (mut api_today, mut api_week, mut api_month) = (0f64, 0f64, 0f64);
     let mut api_by: HashMap<String, (f64, i64)> = HashMap::new();
     let mut proj: HashMap<String, (i64, f64)> = HashMap::new();
-    // Without a Claude plan (no login found) Claude Code is billed per token, so its usage counts as money.
     let limits = fetch_limits();
     let no_plan = limits["source"] == "none";
     let mut models: HashMap<String, (i64, String)> = HashMap::new();
@@ -929,7 +904,6 @@ fn snapshot(c: &Connection) {
     println!("{out}");
 }
 
-/// API spend for one calendar month. `back` = 0 current month, 1 last month, ...
 fn month_report(c: &Connection, back: i64) {
     use serde_json::json;
     let prices = load_prices();
@@ -1009,7 +983,6 @@ fn month_report(c: &Connection, back: i64) {
     );
 }
 
-/// Tool calls and their failures, keyed by `tool_use` id. Errors arrive later as a `tool_result` with `is_error=true`.
 fn note_tools(tx: &rusqlite::Transaction<'_>, line: &str) {
     let Ok(d) = serde_json::from_str::<Value>(line) else {
         return;
@@ -1034,7 +1007,6 @@ fn note_tools(tx: &rusqlite::Transaction<'_>, line: &str) {
                 ) else {
                     continue;
                 };
-                // mcp__server__tool -> server:tool
                 let tool = match name.strip_prefix("mcp__") {
                     Some(r) => r.replacen("__", ":", 1),
                     None => name.to_string(),
@@ -1057,7 +1029,6 @@ fn note_tools(tx: &rusqlite::Transaction<'_>, line: &str) {
                     };
                     let mut ls = text.lines().map(str::trim).filter(|l| !l.is_empty());
                     let first = ls.next().unwrap_or("");
-                    // "Exit code 1" alone says nothing; add the first line of output after it
                     let joined = if first.starts_with("Exit code") {
                         match ls.next() {
                             Some(n) => format!("{first}: {n}"),
@@ -1076,7 +1047,6 @@ fn note_tools(tx: &rusqlite::Transaction<'_>, line: &str) {
     }
 }
 
-/// One short line saying what a tool was asked to do: the command, file, query...
 fn tool_arg(input: &Value) -> String {
     let pick = [
         "command",
@@ -1120,7 +1090,6 @@ fn fail_kind(msg: &str) -> &'static str {
     }
 }
 
-/// Recent Claude Code sessions with their tool use and failures.
 fn trace_report(c: &Connection) {
     use serde_json::json;
     let aliases = load_aliases();
@@ -1187,7 +1156,6 @@ fn trace_report(c: &Connection) {
 }
 
 fn proc_name(raw: &str) -> String {
-    // nettop prints "name.pid"; Claude Code's binary is named after its version, e.g. 2.1.319
     let base = raw
         .rsplit_once('.')
         .filter(|(_, p)| p.chars().all(|c| c.is_ascii_digit()))
@@ -1208,7 +1176,6 @@ fn host_label(ip: &str) -> Option<&'static str> {
         None
     }
 }
-/// Host belongs to a well-known provider or CDN. This means "recognised", not "safe": a CDN hosts anyone's content.
 fn is_known(host: &str) -> bool {
     [
         "anthropic.com",
@@ -1248,7 +1215,6 @@ fn is_private(ip: &str) -> bool {
         || ip.starts_with("100.")
 }
 
-/// "python · my-app": what a process is, from the last folder of its working directory. Cached per pid.
 fn pid_label(c: &Connection, pid: &str, base: &str) -> String {
     if !(base == "claude" || base == "node" || base == "ollama" || base.starts_with("python")) {
         return base.to_string();
@@ -1282,8 +1248,6 @@ fn pid_label(c: &Connection, pid: &str, base: &str) -> String {
     label
 }
 
-/// Outbound traffic per process. Bytes come from nettop's cumulative counters (diffed between runs);
-/// hosts come from lsof, resolved by reverse DNS (cached). IP-level only: macOS does not expose domain names without root.
 fn net_report(c: &Connection) {
     use serde_json::json;
     let now = Local::now().timestamp();
@@ -1292,7 +1256,6 @@ fn net_report(c: &Connection) {
         [],
     )
     .ok();
-    // 1) bytes
     if let Ok(o) = std::process::Command::new("nettop")
         .args(["-P", "-L", "1", "-m", "tcp", "-J", "bytes_in,bytes_out"])
         .output()
@@ -1332,7 +1295,6 @@ fn net_report(c: &Connection) {
     }
     c.execute("DELETE FROM net WHERE ts<?", [now - 8 * 86400])
         .ok();
-    // 2) live connections: (label, pid, ip, port)
     let mut conns: Vec<(String, String, String, String)> = vec![];
     if let Ok(o) = std::process::Command::new("lsof")
         .args(["-iTCP", "-sTCP:ESTABLISHED", "-nP", "-Fpcn"])
@@ -1364,7 +1326,6 @@ fn net_report(c: &Connection) {
             }
         }
     }
-    // process uptimes, one ps call
     let mut up: HashMap<String, String> = HashMap::new();
     if let Ok(o) = std::process::Command::new("ps")
         .args(["-Ao", "pid=,etime="])
@@ -1377,7 +1338,6 @@ fn net_report(c: &Connection) {
             }
         }
     }
-    // forward-resolve hostnames of services these tools are known to use, so their IPs get a real name (refreshed every 6h)
     for h in [
         "api.anthropic.com",
         "claude.ai",
@@ -1425,7 +1385,6 @@ fn net_report(c: &Connection) {
             .ok();
         }
     }
-    // reverse DNS, a few new lookups per run, cached
     let mut budget = 6;
     let mut name_of = |ip: &str| -> String {
         if let Some(h) = host_label(ip) {
@@ -1507,7 +1466,6 @@ fn net_report(c: &Connection) {
     );
 }
 
-/// Standard output of a command, empty when it cannot run.
 fn out_of(cmd: &str, args: &[&str]) -> String {
     std::process::Command::new(cmd)
         .args(args)
@@ -1516,8 +1474,6 @@ fn out_of(cmd: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Every repository in Backtrail's repo-to-thread map that exists: (thread name, path, thread state).
-/// Reads Backtrail's config for the workspace and the map, and its database for the live state.
 fn all_repos() -> (Option<PathBuf>, Vec<(String, PathBuf, String)>) {
     let dir = home().join("Library/Application Support/Backtrail");
     let Some(cfg) = fs::read_to_string(dir.join("config.json"))
@@ -1556,7 +1512,6 @@ fn all_repos() -> (Option<PathBuf>, Vec<(String, PathBuf, String)>) {
     (Some(ws), repos)
 }
 
-/// Repositories of the Backtrail threads that are in development (state `moving`): (thread name, path).
 fn backtrail_repos() -> (Option<PathBuf>, Vec<(String, PathBuf)>) {
     let (ws, all) = all_repos();
     (
@@ -1568,9 +1523,6 @@ fn backtrail_repos() -> (Option<PathBuf>, Vec<(String, PathBuf)>) {
     )
 }
 
-/// `aimon use <key> [--via app|web|cli]`: records that the owner used a project. The key is an app bundle path,
-/// a repository folder relative to the workspace, or a Backtrail thread name. At most one row per key per `USE_GAP` seconds.
-/// Seconds between two recorded uses of the same key; the number of rows is the weight of a project's use.
 const USE_GAP: i64 = 600;
 
 fn use_cmd(a: &[String]) {
@@ -1598,12 +1550,12 @@ fn use_cmd(a: &[String]) {
     }
 }
 
-/// `aimon time <key> <seconds>`: adds seconds of foreground time to a project for today. The menu bar app calls it
-/// while a project's app is frontmost and the keyboard or mouse was used in the last two minutes.
 fn time_cmd(a: &[String]) {
     let (Some(key), Some(secs)) = (
         a.get(2),
-        a.get(3).and_then(|x| x.parse::<i64>().ok()).filter(|n| (1..=600).contains(n)),
+        a.get(3)
+            .and_then(|x| x.parse::<i64>().ok())
+            .filter(|n| (1..=600).contains(n)),
     ) else {
         eprintln!("usage: aimon time <app path|repo folder|thread> <seconds>");
         return;
@@ -1617,7 +1569,6 @@ fn time_cmd(a: &[String]) {
         .ok();
 }
 
-/// App bundles that may belong to a project: in /Applications, ~/Applications, and up to three levels inside a repository.
 fn app_bundles(repos: &[(String, PathBuf, String)]) -> Vec<PathBuf> {
     let mut out = vec![];
     for d in [PathBuf::from("/Applications"), home().join("Applications")] {
@@ -1656,8 +1607,6 @@ fn app_bundles(repos: &[(String, PathBuf, String)]) -> Vec<PathBuf> {
     out
 }
 
-/// The repository an app bundle belongs to: the one it sits in, the one named in aimon's config.json `apps`
-/// map ({"Kestrel.app": "kestrel/kestrel-app"}), or the one whose folder has the bundle's name.
 fn repo_of_app(
     app: &Path,
     repos: &[(String, PathBuf, String)],
@@ -1678,9 +1627,6 @@ fn repo_of_app(
     })
 }
 
-/// `aimon usage`: for every project (Backtrail repository, dropped threads left out), how often the owner used it and
-/// how much was built in it. Use is recorded by `aimon use` (the menu bar app records app activations); an app's
-/// last-used date from Spotlight fills in before that. Built is commits in the last 28 days. Read-only apart from the query.
 fn usage_report() {
     let (ws, repos) = all_repos();
     let Some(ws) = ws else {
@@ -1753,7 +1699,6 @@ fn usage_report() {
             untracked.push(name.clone());
             continue;
         }
-        // Spotlight's last-used date of the app bundles, for the time before aimon recorded anything
         let seen = app_list
             .iter()
             .filter_map(|a| {
@@ -1766,7 +1711,7 @@ fn usage_report() {
             .map(|d| d.timestamp())
             .max();
         let last = ts.iter().copied().max().into_iter().chain(seen).max();
-        ts.extend(seen); // the Spotlight date is a day of use too
+        ts.extend(seen);
         let commits = |days: i64| {
             out_of(
                 "git",
@@ -1793,9 +1738,8 @@ fn usage_report() {
             _ if c28 > 0 => "built_unused",
             _ => "idle",
         };
-        // the days used in the last year, and days used in each of the last 12 weeks (oldest first; the last week ends today)
-        // per day: (uses, seconds in the foreground)
-        let mut per_day: std::collections::BTreeMap<NaiveDate, (usize, i64)> = std::collections::BTreeMap::new();
+        let mut per_day: std::collections::BTreeMap<NaiveDate, (usize, i64)> =
+            std::collections::BTreeMap::new();
         for d in ts
             .iter()
             .filter(|t| **t >= day_start(370))
@@ -1857,8 +1801,6 @@ fn usage_report() {
     );
 }
 
-/// State of each repository of a Backtrail thread in development: `LaunchAgents` that belong to it and whether
-/// they run, TCP ports its processes listen on, and unpushed or uncommitted work. Read-only.
 fn projects_report() {
     let (root, found) = backtrail_repos();
     let Some(root) = root else {
@@ -1872,7 +1814,6 @@ fn projects_report() {
             .position(|r| !p.is_empty() && Path::new(p).starts_with(r))
     };
 
-    // LaunchAgents with KeepAlive: (running, labels that are not running) per repository
     let mut agents: HashMap<usize, (i64, Vec<String>)> = HashMap::new();
     let listed = out_of("launchctl", &["list"]);
     let pids: HashMap<&str, &str> = listed
@@ -1884,7 +1825,6 @@ fn projects_report() {
             Some((f.next()?, pid))
         })
         .collect();
-    // a program started outside launchd (opened from Finder after a clean quit) counts as running
     let procs = out_of("ps", &["-axo", "command="]);
     if let Ok(rd) = fs::read_dir(home().join("Library/LaunchAgents")) {
         for e in rd.flatten() {
@@ -1902,7 +1842,7 @@ fn projects_report() {
             };
             if d["KeepAlive"].is_null() || d["KeepAlive"] == false {
                 continue;
-            } // scheduled jobs are idle most of the time
+            }
             let prog = d["ProgramArguments"][0]
                 .as_str()
                 .or(d["Program"].as_str())
@@ -1923,7 +1863,6 @@ fn projects_report() {
         }
     }
 
-    // listening TCP ports, assigned by the working directory of the process
     let mut by_pid: HashMap<String, Vec<i64>> = HashMap::new();
     let mut pid = String::new();
     for l in out_of("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"]).lines() {
@@ -1952,7 +1891,6 @@ fn projects_report() {
         }
     }
 
-    // Optional security results written by an external scanner: {"checked": <rfc3339>, "repos": [{"path", "secrets", "advisories"}]}
     let security: HashMap<String, Value> =
         fs::read_to_string(home().join("Library/Application Support/aimon/security.json"))
             .ok()
@@ -2001,7 +1939,6 @@ fn projects_report() {
     );
 }
 
-/// `aimon security`: the scan results in `security.json`, one line per repository. Read-only.
 fn security_report() {
     let path = home().join("Library/Application Support/aimon/security.json");
     let Some(v) = fs::read_to_string(&path)
@@ -2056,8 +1993,6 @@ fn security_report() {
     println!("{} repositories, {s} secrets, {d} advisories", repos.len());
 }
 
-/// Exits quietly when stdout is closed early (`| head`) instead of printing a panic. Other panics, and broken
-/// sockets, keep the default behavior.
 fn exit_quietly_on_closed_stdout() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

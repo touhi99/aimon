@@ -1,5 +1,4 @@
 #!/bin/zsh
-# Builds the Rust core and the Swift menu bar app, bundles them into AIMon.app
 set -e
 cd "$(dirname "$0")"
 cargo build --release
