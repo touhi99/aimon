@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = Store()
     var item: NSStatusItem!
     let popover = NSPopover()
+    var timeTimer: Timer?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         // Single instance: a second copy would add another menu bar item and double all the log scanning.
@@ -22,12 +23,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onChange = { [weak self] in self?.updateBar() }
         updateBar()
         store.start()
+        startTimeTracking()
         // Use of a project's Mac app: one event per activation, no polling. Only bundles that belong to a project are recorded.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let path = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleURL?.path else { return }
             MainActor.assumeIsolated {
                 guard let self, self.store.trackedApps.contains(path) else { return }
                 self.store.recordUse(path)
+            }
+        }
+    }
+
+    /// Foreground time of a project's app: every 15 s, if the frontmost app belongs to a project and the keyboard or
+    /// mouse was used in the last two minutes, those seconds are added to it.
+    func startTimeTracking() {
+        timeTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let path = NSWorkspace.shared.frontmostApplication?.bundleURL?.path,
+                      self.store.trackedApps.contains(path) else { return }
+                let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+                if idle < 120 { self.store.recordTime(path, 15) }
             }
         }
     }

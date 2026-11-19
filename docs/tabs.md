@@ -26,9 +26,9 @@ The tab has been checked on one Mac.
 
 ## Use
 
-Shown with Projects. Every project of a Backtrail thread that is not dropped, grouped as in use (used in the last 7 days), going stale (unused for over a week, or for two weeks while it still got commits), not used lately, and not used yet. Each project has a 12-week strip, one square per week, darker for more days used. A click opens the last year as a day grid.
+Shown with Projects. Every project of a Backtrail thread that is not dropped, grouped as in use (used in the last 7 days), going stale (unused for over a week, or for two weeks while it still got commits), not used lately, and not used yet. Each project has a 12-week strip, one bar per week, taller for more foreground time (more opens until time has been recorded), scaled against the busiest week of any project. The row shows time, opens and days used in the last 7 days. A click opens the last year as a day grid, shaded per day the same way.
 
-Use is stored in the `uses` table, at most once per project per hour, when:
+Use is stored in the `uses` table, at most once per project per 10 minutes, when:
 
 - An app bundle that belongs to a project becomes the active app. A bundle belongs to a project when it is inside the repository, when its name matches the repository folder, or when the `apps` map in `config.json` names it (`{"apps": {"Kestrel.app": "kestrel/kestrel-app"}}`). Before the first recorded use, the bundle's last-used date from Spotlight is shown.
 - The popover is opened (for aimon itself).

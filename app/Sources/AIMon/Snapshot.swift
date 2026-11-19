@@ -90,9 +90,9 @@ struct ProjData: Codable { var root: String?; var projects: [ProjRow] }
 /// One project in the Use view (`aimon usage`): days used, last use, commits, and a status.
 struct UseRow: Codable, Identifiable {
     var name: String; var path: String; var apps: [String]
-    var days7: Int; var days28: Int; var last: Int?
+    var days7: Int; var days28: Int; var uses7: Int; var uses28: Int; var secs7: Int; var secs28: Int; var last: Int?
     var commits7: Int; var commits28: Int; var status: String
-    var weeks: [Int]; var days: [String]
+    var weeks: [Int]; var week_secs: [Int]; var days: [String]; var counts: [Int]; var day_secs: [Int]
     var id: String { path }
 }
 struct UseData: Codable { var since: Int?; var rows: [UseRow]; var untracked: [String] }
@@ -198,10 +198,16 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Records one use of a project (`aimon use`); the core keeps at most one row per key per hour.
+    /// Records one use of a project (`aimon use`); the core keeps at most one row per key per 10 minutes.
     func recordUse(_ key: String) {
         let bin = binary
         Task.detached { _ = Store.run(bin, ["use", key, "--via", "app"]) }
+    }
+
+    /// Adds foreground seconds to a project (`aimon time`).
+    func recordTime(_ key: String, _ secs: Int) {
+        let bin = binary
+        Task.detached { _ = Store.run(bin, ["time", key, String(secs)]) }
     }
 
     nonisolated private static func run(_ bin: String, _ args: [String]) -> Data? {

@@ -444,15 +444,22 @@ struct PopoverView: View {
     func useTab() -> some View {
         VStack(alignment: .leading, spacing: 18) {
             if let u = store.usage {
+                // bars follow time once any has been recorded; until then they follow opens
+                let byTime = u.rows.contains { $0.week_secs.contains { $0 > 0 } }
+                let weekVal: (UseRow) -> [Int] = { byTime ? $0.week_secs : $0.weeks }
+                let dayVal: (UseRow) -> [Int] = { byTime ? $0.day_secs : $0.counts }
+                let wkNow: (UseRow) -> Int = { byTime ? $0.secs7 : $0.uses7 }
+                let maxWeek = max(1, u.rows.flatMap(weekVal).max() ?? 1)
+                let maxDay = max(1, u.rows.flatMap(dayVal).max() ?? 1)
                 let groups: [(String, String?, [UseRow])] = [
                     ("In use", nil, u.rows.filter { $0.status == "used" }),
                     ("Going stale", "still built, not opened", u.rows.filter { $0.status == "quiet" || $0.status == "built_unused" }),
                     ("Not used lately", nil, u.rows.filter { $0.status == "idle" }),
                 ]
                 ForEach(groups.filter { !$0.2.isEmpty }, id: \.0) { g in
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         title(g.0, trailing: g.1)
-                        ForEach(g.2) { useRow($0, since: u.since) }
+                        ForEach(g.2.sorted { wkNow($0) > wkNow($1) }) { useRow($0, since: u.since, maxWeek: maxWeek, maxDay: maxDay, byTime: byTime) }
                     }
                 }
                 let fresh = u.rows.filter { $0.status == "new" }.map { $0.name }
@@ -463,49 +470,58 @@ struct PopoverView: View {
                     }
                 }
                 let since = u.since.map { "Since " + Date(timeIntervalSince1970: TimeInterval($0)).formatted(.dateTime.day().month(.abbreviated)) } ?? "Tracking from today"
-                Text(since + " · a square is a week, darker is more days · click for the year")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
-                    .help("A day counts when the project's app is opened or its page is loaded. Not tracked: " + u.untracked.joined(separator: ", "))
+                Text(since + " · one bar per week, the last is this week · bars show \(byTime ? "time in the app" : "opens (time shows once recorded)") · last 7 days on the right")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(2)
+                    .help("An open is counted when the project's app comes to the front or its page is loaded, at most once per 10 minutes. Not tracked: " + u.untracked.joined(separator: ", "))
             } else {
                 Text("Reading use…").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
             }
         }
     }
-    func useRow(_ r: UseRow, since: Int?) -> some View {
-        // days before tracking began are drawn fainter than days without use
+    func useRow(_ r: UseRow, since: Int?, maxWeek: Int, maxDay: Int, byTime: Bool) -> some View {
         let start = Calendar.current.startOfDay(for: since.map { Date(timeIntervalSince1970: TimeInterval($0)) } ?? Date())
         let today = Calendar.current.startOfDay(for: Date())
         let stale = r.status == "quiet" || r.status == "built_unused"
         let weeksIdle = r.last.map { Int(Date().timeIntervalSince1970 - TimeInterval($0)) / 604800 } ?? 0
-        let note = stale ? "\(weeksIdle == 0 ? "1" : "\(weeksIdle)") wk · \(r.commits28) commit\(r.commits28 == 1 ? "" : "s")"
-            : r.status == "used" ? "\(r.days7) day\(r.days7 == 1 ? "" : "s") this wk" : "last " + (r.last.map { Self.ago(Date(timeIntervalSince1970: TimeInterval($0))) } ?? "never")
+        let vals = byTime ? r.week_secs : r.weeks
+        let big = byTime ? Self.duration(r.secs7) : "\(r.uses7) open\(r.uses7 == 1 ? "" : "s")"
+        let other = byTime ? "\(r.uses7) open\(r.uses7 == 1 ? "" : "s")" : Self.duration(r.secs7)
+        let small = stale ? "\(weeksIdle == 0 ? "1" : "\(weeksIdle)") wk idle · \(r.commits28) commit\(r.commits28 == 1 ? "" : "s")"
+            : r.status == "used" ? other + " · \(r.days7) day\(r.days7 == 1 ? "" : "s")"
+            : "last " + (r.last.map { Self.ago(Date(timeIntervalSince1970: TimeInterval($0))) } ?? "never")
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Text(r.name).font(.system(size: 12, weight: .medium)).lineLimit(1).frame(width: 120, alignment: .leading)
-                HStack(spacing: 2) {
-                    ForEach(Array(r.weeks.enumerated()), id: \.offset) { i, n in
-                        let weekEnd = Calendar.current.date(byAdding: .day, value: -7 * (r.weeks.count - 1 - i), to: today)!
-                        RoundedRectangle(cornerRadius: 2).fill(n > 0 ? Color.green.opacity(0.3 + 0.7 * Double(min(n, 7)) / 7) : Color.gray.opacity(weekEnd < start ? 0.06 : 0.18))
-                            .frame(width: 11, height: 11)
+            HStack(alignment: .center, spacing: 10) {
+                Text(r.name).font(.system(size: 12, weight: .medium)).lineLimit(1).frame(width: 100, alignment: .leading)
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(Array(vals.enumerated()), id: \.offset) { i, n in
+                        let weekEnd = Calendar.current.date(byAdding: .day, value: -7 * (vals.count - 1 - i), to: today)!
+                        let h = n > 0 ? 3 + 25 * CGFloat(Self.weight(n, maxWeek)) : 2
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(n > 0 ? Color.accentColor.opacity(i == vals.count - 1 ? 1 : 0.55) : Color.gray.opacity(weekEnd < start ? 0.1 : 0.25))
+                            .frame(width: 9, height: h)
+                            .help(byTime ? Self.duration(n) : "\(n) open\(n == 1 ? "" : "s")")
                     }
-                }
-                Spacer()
-                Text(note).font(.system(size: 11)).monospacedDigit().foregroundStyle(stale ? Color.orange : Color.secondary).lineLimit(1)
+                }.frame(height: 28, alignment: .bottom)
+                Spacer(minLength: 4)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(big).font(.system(size: 12, weight: .semibold)).monospacedDigit().foregroundStyle(stale ? Color.orange : Color.primary)
+                    Text(small).font(.system(size: 10)).monospacedDigit().foregroundStyle(stale ? Color.orange : Color.secondary)
+                }.lineLimit(1)
                 Image(systemName: openUse == r.id ? "chevron.down" : "chevron.right").font(.system(size: 9)).foregroundStyle(.tertiary)
             }
             .contentShape(Rectangle())
             .onTapGesture { openUse = openUse == r.id ? nil : r.id }
-            if openUse == r.id { yearGrid(r, start: start) }
+            if openUse == r.id { yearGrid(r, start: start, maxDay: maxDay, byTime: byTime) }
         }
     }
     /// The last year as a day grid: one column per week (Monday on top), one square per day.
-    func yearGrid(_ r: UseRow, start tracked: Date) -> some View {
+    func yearGrid(_ r: UseRow, start tracked: Date, maxDay: Int, byTime: Bool) -> some View {
         let cal = Calendar(identifier: .iso8601)
         let today = cal.startOfDay(for: Date())
         let thisMonday = cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: today))!
         let start = cal.date(byAdding: .weekOfYear, value: -52, to: thisMonday)!
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
-        let used = Set(r.days)
+        let used = Dictionary(uniqueKeysWithValues: zip(r.days, byTime ? r.day_secs : r.counts)).filter { $0.value > 0 }
         let weeks = (0...52).map { cal.date(byAdding: .weekOfYear, value: $0, to: start)! }
         let yearCount = r.days.count
         return VStack(alignment: .leading, spacing: 4) {
@@ -522,17 +538,24 @@ struct PopoverView: View {
                         ForEach(0..<7, id: \.self) { d in
                             let day = cal.date(byAdding: .day, value: d, to: w)!
                             RoundedRectangle(cornerRadius: 1.5)
-                                .fill(day > today ? Color.clear : used.contains(fmt.string(from: day)) ? Color.green : Color.gray.opacity(day < tracked ? 0.06 : 0.18))
+                                .fill(day > today ? Color.clear : used[fmt.string(from: day)].map { Color.green.opacity(0.3 + 0.7 * Self.weight($0, maxDay)) } ?? Color.gray.opacity(day < tracked ? 0.06 : 0.18))
                                 .frame(width: 7.5, height: 7.5)
-                                .help(day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
+                                .help(day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)) + (used[fmt.string(from: day)].map { " · " + (byTime ? Self.duration($0) : "\($0) open\($0 == 1 ? "" : "s")") } ?? ""))
                         }
                     }.frame(width: 9)
                 }
             }
-            Text("Used \(yearCount) day\(yearCount == 1 ? "" : "s") in the last year · \(r.commits28) commits in 4 weeks")
+            Text("\(Self.duration(r.day_secs.reduce(0, +))) and \(r.counts.reduce(0, +)) opens on \(yearCount) day\(yearCount == 1 ? "" : "s") in the last year · \(r.commits28) commits in 4 weeks")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(10).background(Color.gray.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+    }
+    /// 0...1 shade for a count against the busiest week or day of any project; a square root keeps small counts visible.
+    static func weight(_ n: Int, _ top: Int) -> Double { (Double(n) / Double(top)).squareRoot() }
+    static func duration(_ secs: Int) -> String {
+        if secs < 60 { return secs == 0 ? "0m" : "<1m" }
+        let m = secs / 60
+        return m < 60 ? "\(m)m" : "\(m / 60)h \(m % 60)m"
     }
     static func ago(_ d: Date) -> String {
         let days = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: d), to: Calendar.current.startOfDay(for: Date())).day ?? 0

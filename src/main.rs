@@ -70,6 +70,7 @@ fn open_db() -> Connection {
         CREATE TABLE IF NOT EXISTS pidlabel(pid TEXT, base TEXT, label TEXT, PRIMARY KEY(pid, base));
         CREATE TABLE IF NOT EXISTS uses(ts INTEGER, key TEXT, via TEXT);
         CREATE INDEX IF NOT EXISTS uses_key ON uses(key, ts);
+        CREATE TABLE IF NOT EXISTS spent(day TEXT, key TEXT, secs INTEGER, PRIMARY KEY(day, key));
     ").expect("write to database");
     c.execute("ALTER TABLE tools ADD COLUMN arg TEXT", []).ok();
     c.execute("ALTER TABLE tools ADD COLUMN msg TEXT", []).ok();
@@ -205,9 +206,30 @@ fn project_for(cwd: &str, aliases: &HashMap<String, String>) -> String {
             return name.clone();
         }
     }
-    Path::new(cwd)
-        .file_name()
-        .map_or_else(|| "?".into(), |s| s.to_string_lossy().to_string())
+    repo_name(cwd)
+}
+
+/// Name of the git repository a working directory is in (the nearest folder above it with a `.git`). A folder
+/// outside any repository that holds repositories is a workspace and is named "<folder> (workspace)"; any other
+/// folder is named by its last component.
+fn repo_name(cwd: &str) -> String {
+    let last = |p: &Path| p.file_name().map_or_else(|| "?".into(), |s| s.to_string_lossy().to_string());
+    if cwd.is_empty() {
+        return "?".into();
+    }
+    if let Some(root) = Path::new(cwd).ancestors().find(|a| a.join(".git").exists()) {
+        return last(root);
+    }
+    let holds_repos = fs::read_dir(cwd)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.path().join(".git").exists());
+    if holds_repos {
+        format!("{} (workspace)", last(Path::new(cwd)))
+    } else {
+        last(Path::new(cwd))
+    }
 }
 
 fn scan(c: &mut Connection) -> (usize, usize) {
@@ -300,7 +322,7 @@ fn scan(c: &mut Connection) -> (usize, usize) {
                 "ollama_sub"
             };
             tx.execute("INSERT INTO calls VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)
-                ON CONFLICT(id) DO UPDATE SET inp=excluded.inp,out=excluded.out,cread=excluded.cread,cw5=excluded.cw5,cw1=excluded.cw1
+                ON CONFLICT(id) DO UPDATE SET project=excluded.project,inp=excluded.inp,out=excluded.out,cread=excluded.cread,cw5=excluded.cw5,cw1=excluded.cw1
                 WHERE excluded.out>=calls.out",
                 params![id, ts, "claude-code", project, model, g(u,"input_tokens"), g(u,"output_tokens"), g(u,"cache_read_input_tokens"), w5, w1, sess, kind]).expect("write to database");
             ncalls += 1;
@@ -1001,9 +1023,7 @@ fn note_tools(tx: &rusqlite::Transaction<'_>, line: &str) {
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map_or(0, |t| t.timestamp());
     let cwd = d.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
-    let project = Path::new(cwd)
-        .file_name()
-        .map_or_else(|| "?".into(), |s| s.to_string_lossy().to_string());
+    let project = repo_name(cwd);
     let sess = d.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
     for b in items {
         match b.get("type").and_then(|v| v.as_str()) {
@@ -1020,7 +1040,7 @@ fn note_tools(tx: &rusqlite::Transaction<'_>, line: &str) {
                     None => name.to_string(),
                 };
                 let arg = b.get("input").map(tool_arg).unwrap_or_default();
-                tx.execute("INSERT INTO tools(id, ts, sess, project, tool, arg) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET arg=excluded.arg", params![id, ts, sess, project, tool, arg]).expect("write to database");
+                tx.execute("INSERT INTO tools(id, ts, sess, project, tool, arg) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET arg=excluded.arg, project=excluded.project", params![id, ts, sess, project, tool, arg]).expect("write to database");
             }
             Some("tool_result")
                 if b.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) =>
@@ -1549,7 +1569,10 @@ fn backtrail_repos() -> (Option<PathBuf>, Vec<(String, PathBuf)>) {
 }
 
 /// `aimon use <key> [--via app|web|cli]`: records that the owner used a project. The key is an app bundle path,
-/// a repository folder relative to the workspace, or a Backtrail thread name. At most one row per key per hour.
+/// a repository folder relative to the workspace, or a Backtrail thread name. At most one row per key per `USE_GAP` seconds.
+/// Seconds between two recorded uses of the same key; the number of rows is the weight of a project's use.
+const USE_GAP: i64 = 600;
+
 fn use_cmd(a: &[String]) {
     let Some(key) = a.get(2).filter(|k| !k.starts_with("--")) else {
         eprintln!("usage: aimon use <app path|repo folder|thread> [--via app|web|cli]");
@@ -1565,7 +1588,7 @@ fn use_cmd(a: &[String]) {
     let recent: i64 = c
         .query_row(
             "SELECT COUNT(*) FROM uses WHERE key=? AND ts>?",
-            params![key, now - 3600],
+            params![key, now - USE_GAP],
             |r| r.get(0),
         )
         .unwrap_or(0);
@@ -1573,6 +1596,25 @@ fn use_cmd(a: &[String]) {
         c.execute("INSERT INTO uses VALUES(?,?,?)", params![now, key, via])
             .ok();
     }
+}
+
+/// `aimon time <key> <seconds>`: adds seconds of foreground time to a project for today. The menu bar app calls it
+/// while a project's app is frontmost and the keyboard or mouse was used in the last two minutes.
+fn time_cmd(a: &[String]) {
+    let (Some(key), Some(secs)) = (
+        a.get(2),
+        a.get(3).and_then(|x| x.parse::<i64>().ok()).filter(|n| (1..=600).contains(n)),
+    ) else {
+        eprintln!("usage: aimon time <app path|repo folder|thread> <seconds>");
+        return;
+    };
+    let day = Local::now().date_naive().to_string();
+    open_db()
+        .execute(
+            "INSERT INTO spent VALUES(?,?,?) ON CONFLICT(day, key) DO UPDATE SET secs = secs + excluded.secs",
+            params![day, key, secs],
+        )
+        .ok();
 }
 
 /// App bundles that may belong to a project: in /Applications, ~/Applications, and up to three levels inside a repository.
@@ -1752,29 +1794,49 @@ fn usage_report() {
             _ => "idle",
         };
         // the days used in the last year, and days used in each of the last 12 weeks (oldest first; the last week ends today)
-        let mut days: Vec<NaiveDate> = ts
+        // per day: (uses, seconds in the foreground)
+        let mut per_day: std::collections::BTreeMap<NaiveDate, (usize, i64)> = std::collections::BTreeMap::new();
+        for d in ts
             .iter()
             .filter(|t| **t >= day_start(370))
             .filter_map(|t| Local.timestamp_opt(*t, 0).single())
             .map(|t| t.date_naive())
-            .collect();
-        days.sort();
-        days.dedup();
+        {
+            per_day.entry(d).or_default().0 += 1;
+        }
+        for k in &keys {
+            if let Ok(mut q) = c.prepare("SELECT day, secs FROM spent WHERE key=?") {
+                for (d, n) in q
+                    .query_map([k], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                    .map(|r| r.flatten().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                {
+                    if let Ok(d) = d.parse::<NaiveDate>() {
+                        per_day.entry(d).or_default().1 += n;
+                    }
+                }
+            }
+        }
         let today = Local::now().date_naive();
-        let weeks: Vec<usize> = (0..12)
-            .rev()
-            .map(|k| {
-                days.iter()
-                    .filter(|d| {
-                        let back = (today - **d).num_days();
-                        back >= 7 * k && back < 7 * k + 7
-                    })
-                    .count()
-            })
-            .collect();
+        let sum_back = |from: i64, to: i64| -> (usize, i64) {
+            per_day
+                .iter()
+                .filter(|(d, _)| {
+                    let back = (today - **d).num_days();
+                    back >= from && back < to
+                })
+                .fold((0, 0), |a, (_, v)| (a.0 + v.0, a.1 + v.1))
+        };
+        let wk: Vec<(usize, i64)> = (0..12).rev().map(|k| sum_back(7 * k, 7 * k + 7)).collect();
+        let weeks: Vec<usize> = wk.iter().map(|w| w.0).collect();
+        let week_secs: Vec<i64> = wk.iter().map(|w| w.1).collect();
+        let (uses7, secs7) = sum_back(0, 7);
+        let (uses28, secs28) = sum_back(0, 28);
         rows.push(serde_json::json!({"name": name, "path": path.to_string_lossy(), "state": state, "apps": app_list,
-            "days7": days_in(&ts, 7), "days28": days_in(&ts, 28), "last": last, "commits7": c7, "commits28": c28, "status": status,
-            "weeks": weeks, "days": days.iter().map(std::string::ToString::to_string).collect::<Vec<_>>()}));
+            "days7": days_in(&ts, 7), "days28": days_in(&ts, 28), "uses7": uses7, "uses28": uses28, "secs7": secs7, "secs28": secs28, "last": last, "commits7": c7, "commits28": c28, "status": status,
+            "weeks": weeks, "days": per_day.keys().map(std::string::ToString::to_string).collect::<Vec<_>>(),
+            "counts": per_day.values().map(|v| v.0).collect::<Vec<_>>(),
+            "day_secs": per_day.values().map(|v| v.1).collect::<Vec<_>>(), "week_secs": week_secs}));
     }
     let rank = |s: &str| match s {
         "built_unused" => 0,
@@ -1786,7 +1848,7 @@ fn usage_report() {
     rows.sort_by_key(|r| {
         (
             rank(r["status"].as_str().unwrap_or("")),
-            -r["days28"].as_i64().unwrap_or(0),
+            -r["uses28"].as_i64().unwrap_or(0),
         )
     });
     println!(
@@ -2029,6 +2091,10 @@ fn main() {
     }
     if a.get(1).map(String::as_str) == Some("use") {
         use_cmd(&a);
+        return;
+    }
+    if a.get(1).map(String::as_str) == Some("time") {
+        time_cmd(&a);
         return;
     }
     if a.get(1).map(String::as_str) == Some("usage") {
