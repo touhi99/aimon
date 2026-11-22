@@ -1,5 +1,7 @@
 # AI Project Monitor
 
+![AI Project Monitor banner](docs/banner.svg)
+
 A macOS menu bar app that shows model usage and cost, Claude Code sessions and tool calls, network traffic per process, and the state of local project repositories.
 
 <p align="center">
