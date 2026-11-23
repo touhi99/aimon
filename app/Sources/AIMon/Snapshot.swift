@@ -17,7 +17,7 @@ struct Snapshot: Codable {
     struct Claude: Codable { var today_tokens: Int; var week_tokens: Int; var output: Int; var cache_read: Int; var cache_hit: Double }
     struct Ollama: Codable { var today_tokens: Int; var week_tokens: Int }
     struct Hour: Codable { var claude: Int; var ollama: Int; var other: Int }
-    struct Named: Codable, Identifiable { var name: String; var tokens: Int; var cost: Double?; var kind: String?; var id: String { name + (kind ?? "") } }
+    struct Named: Codable, Identifiable { var name: String; var tokens: Int; var cost: Double?; var kind: String?; var daily: [Int]?; var id: String { name + (kind ?? "") } }
     var generated: Int
     var limits: Limits
     struct OllamaLimits: Codable {
@@ -66,6 +66,12 @@ struct TraceData: Codable {
     var top_24h: [TraceTool]
     var kinds_24h: [String: Int]
     var recent_fails: [TraceFail]
+    var daily: [TraceDay]?
+}
+struct TraceDay: Codable, Identifiable {
+    var day: Int; var calls: Int; var exit: Int; var blocked: Int; var error: Int
+    var id: Int { day }
+    var fails: Int { exit + blocked + error }
 }
 struct NetConn: Codable, Identifiable {
     var host: String; var ip: String; var port: String; var known: Bool; var pid: String; var up: String
@@ -78,7 +84,7 @@ struct NetProc: Codable, Identifiable {
 }
 struct NetData: Codable { var procs: [NetProc] }
 struct ProjRow: Codable, Identifiable {
-    var name: String; var path: String
+    var name: String; var state: String?; var path: String
     var running: Int; var down: [String]; var ports: [Int]
     var remote: Bool; var upstream: Bool; var ahead: Int; var changed: Int
     var security: Sec?
@@ -94,6 +100,20 @@ struct UseRow: Codable, Identifiable {
     var id: String { path }
 }
 struct UseData: Codable { var since: Int?; var rows: [UseRow]; var untracked: [String] }
+
+struct PaceWeek: Codable, Identifiable {
+    var week: String; var runs: Int; var p50_secs: Int; var p90_secs: Int; var tagged_turns: Int; var corrections: Int
+    var id: String { week }
+    var rate: Int? { tagged_turns > 0 ? corrections * 100 / tagged_turns : nil }
+}
+struct PaceProject: Codable, Identifiable {
+    var name: String; var state: String?; var commit_days28: Int; var maintained: Bool; var strip: [Bool]?
+    var id: String { name }
+}
+struct PaceData: Codable {
+    var weeks: [PaceWeek]; var corrections_tracked: Bool
+    var maintained: Int; var projects_total: Int; var projects: [PaceProject]
+}
 
 enum Fmt {
     static func bytes(_ n: Int) -> String {
@@ -113,6 +133,11 @@ enum Fmt {
     static func dur(_ a: Int, _ b: Int) -> String {
         let m = max(0, b - a) / 60
         return m < 60 ? "\(max(m, 1))m" : "\(m / 60)h \(m % 60)m"
+    }
+    static func duration(_ secs: Int) -> String {
+        if secs < 60 { return secs == 0 ? "0m" : "<1m" }
+        let m = secs / 60
+        return m < 60 ? "\(m)m" : "\(m / 60)h \(m % 60)m"
     }
     static func money(_ v: Double) -> String {
         if v == 0 { return "$0" }
@@ -149,6 +174,7 @@ final class Store: ObservableObject {
     @Published var net: NetData?
     @Published var projects: ProjData?
     @Published var usage: UseData?
+    @Published var pace: PaceData?
     private var usageAt = Date.distantPast
     var trackedApps: Set<String> { Set(usage?.rows.flatMap { $0.apps } ?? []) }
     var onChange: (() -> Void)?
@@ -236,6 +262,8 @@ final class Store: ObservableObject {
             if await MainActor.run(body: { Date().timeIntervalSince(self.usageAt) > 300 }) {
                 let u = Store.run(bin, ["usage"]).flatMap { try? JSONDecoder().decode(UseData.self, from: $0) }
                 await MainActor.run { if let u { self.usage = u; self.usageAt = Date() } }
+                let pc = Store.run(bin, ["pace"]).flatMap { try? JSONDecoder().decode(PaceData.self, from: $0) }
+                await MainActor.run { if let pc { self.pace = pc } }
             }
             let n = Store.run(bin, ["net"]).flatMap { try? JSONDecoder().decode(NetData.self, from: $0) }
             let t = Store.run(bin, ["trace"]).flatMap { try? JSONDecoder().decode(TraceData.self, from: $0) }

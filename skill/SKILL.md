@@ -20,12 +20,13 @@ The built-in usage text only lists `today|by-project|by-model|scan`; the other c
 | Everything the app shows (spend, limits, cache hit) | `aimon snapshot` |
 | Claude Code tool calls, failures, sessions (24 h) | `aimon trace` |
 | Which projects are used, stale, untracked | `aimon usage` |
+| Agent run length per week, correction rate, projects maintained (commits on 5+ days in 28) | `aimon pace` |
 | Per project: services running or down, ports, unpushed work | `aimon projects` |
 | Secret and advisory scan results | `aimon security` |
 | Record a use of a project | `aimon use <folder\|thread> [--via web\|cli]` |
 | Enable plan limits or Ollama spend | `aimon config <claude_limits\|ollama> <on\|off>` |
 
-`aimon usage` is project usage (days used), not spend. Spend is `today`, `by-project`, `by-model`, `month`.
+`aimon usage` is project usage (days used), not spend. `aimon pace` reads run length from `~/.claude/projects` (prompt to last agent reply, p50 and p90 seconds) and corrections from Backtrail's `turn_tags`; `tagged_turns: 0` means that week is not tagged yet, not zero corrections. Spend is `today`, `by-project`, `by-model`, `month`.
 
 ## Reading `aimon net`
 

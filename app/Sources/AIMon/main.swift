@@ -2,10 +2,12 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let store = Store()
     var item: NSStatusItem!
     let popover = NSPopover()
+    let nav = Nav()
+    var window: NSWindow?
     var timeTimer: Timer?
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -18,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.target = self
         item.button?.action = #selector(toggle)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: PopoverView(store: store))
+        popover.contentViewController = NSHostingController(rootView: MenuView(store: store) { [weak self] page, project in self?.openWindow(page, project: project) })
         store.onChange = { [weak self] in self?.updateBar() }
         updateBar()
         store.start()
@@ -75,6 +77,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !stopped.isEmpty { t.append(NSAttributedString(string: "  ●", attributes: [.font: font, .foregroundColor: NSColor.systemRed])) }
     }
 
+    func openWindow(_ page: Int, project: String? = nil) {
+        popover.performClose(nil)
+        nav.project = project
+        nav.page = page
+        if window == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 780),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            w.title = "AI Monitor"
+            w.contentViewController = NSHostingController(rootView: AppWindowView(store: store, nav: nav))
+            w.setContentSize(NSSize(width: 1100, height: 780))
+            w.isReleasedWhenClosed = false
+            w.setFrameAutosaveName("AIMonitorWindow")
+            w.delegate = self
+            w.center()
+            window = w
+        }
+        NSApp.setActivationPolicy(.regular)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        store.refresh()
+        store.recordUse("aimon")
+    }
+
+    func windowWillClose(_ n: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     @objc func toggle() {
         guard let b = item.button else { return }
         if popover.isShown { popover.performClose(nil) } else {
@@ -98,21 +127,33 @@ struct RingIcon: View {
 
 let app = NSApplication.shared
 MainActor.assumeIsolated {
+    if let out = ProcessInfo.processInfo.environment["AIMON_ICON"] {
+        let r = ImageRenderer(content: AppMark(size: 824).padding(100))
+        r.scale = 1
+        if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: out))
+        }
+        exit(0)
+    }
     if let i = CommandLine.arguments.firstIndex(of: "--png"), i + 1 < CommandLine.arguments.count {
         let out = CommandLine.arguments[i + 1]
         let store = Store()
         store.start()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
+            let env = ProcessInfo.processInfo.environment
+            let wide = env["AIMON_WINDOW"] != nil
+            let size = NSSize(width: wide ? 1100 : 380, height: wide ? 1000 : 900)
             for (name, scheme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
-                let host = NSHostingView(rootView: PopoverView(store: store))
-                let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)
+                let root = wide ? AnyView(AppWindowView(store: store, nav: Nav())) : AnyView(MenuView(store: store) { _, _ in })
+                let host = NSHostingView(rootView: root)
+                let win = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
                 win.appearance = NSAppearance(named: scheme)
                 win.contentView = host
-                host.frame = NSRect(x: 0, y: 0, width: 540, height: 900)
+                host.frame = NSRect(origin: .zero, size: size)
                 for _ in 0..<5 { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.15)) }
-                let h = host.fittingSize.height
-                host.frame = NSRect(x: 0, y: 0, width: 540, height: h)
-                win.setContentSize(NSSize(width: 540, height: h))
+                let h = wide ? size.height : host.fittingSize.height
+                host.frame = NSRect(x: 0, y: 0, width: size.width, height: h)
+                win.setContentSize(NSSize(width: size.width, height: h))
                 host.layoutSubtreeIfNeeded()
                 if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
                     host.cacheDisplay(in: host.bounds, to: rep)

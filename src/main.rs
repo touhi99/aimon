@@ -1,3 +1,5 @@
+mod pace;
+
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection};
 use serde_json::Value;
@@ -803,6 +805,7 @@ fn snapshot(c: &Connection) {
     let (mut api_today, mut api_week, mut api_month) = (0f64, 0f64, 0f64);
     let mut api_by: HashMap<String, (f64, i64)> = HashMap::new();
     let mut proj: HashMap<String, (i64, f64)> = HashMap::new();
+    let mut proj_daily: HashMap<String, Vec<i64>> = HashMap::new();
     let limits = fetch_limits();
     let no_plan = limits["source"] == "none";
     let mut models: HashMap<String, (i64, String)> = HashMap::new();
@@ -842,6 +845,11 @@ fn snapshot(c: &Connection) {
                 e.0 += cost;
                 e.1 += tok;
             }
+        }
+        if source == "claude-code" || source == "log" {
+            proj_daily
+                .entry(aliases.get(pr).cloned().unwrap_or_else(|| pr.clone()))
+                .or_insert_with(|| vec![0; 14])[didx] += i + o;
         }
         if *ts >= week0 {
             if source == "claude-code" || source == "log" {
@@ -898,8 +906,8 @@ fn snapshot(c: &Connection) {
         "ollama": {"today_tokens": o_tok, "week_tokens": o_week},
         "hourly": hourly.iter().map(|h| json!({"claude": h[0], "ollama": h[1], "other": h[2]})).collect::<Vec<_>>(),
         "daily_tokens": daily_tokens,
-        "projects": pv.iter().take(6).map(|(k,v)| json!({"name": k, "tokens": v.0, "cost": v.1})).collect::<Vec<_>>(),
-        "models": mv.iter().take(6).map(|(k,v)| json!({"name": k.split('|').next().expect("split yields at least one part"), "tokens": v.0, "kind": v.1})).collect::<Vec<_>>(),
+        "projects": pv.iter().map(|(k,v)| json!({"name": k, "tokens": v.0, "cost": v.1, "daily": proj_daily.get(k)})).collect::<Vec<_>>(),
+        "models": mv.iter().map(|(k,v)| json!({"name": k.split('|').next().expect("split yields at least one part"), "tokens": v.0, "kind": v.1})).collect::<Vec<_>>(),
     });
     println!("{out}");
 }
@@ -1095,7 +1103,7 @@ fn trace_report(c: &Connection) {
     let aliases = load_aliases();
     let now = Local::now().timestamp();
     let mut st = c.prepare("SELECT session, MIN(project), MIN(ts), MAX(ts), SUM(inp+out+cread+cw5+cw1), COUNT(*) FROM calls
-        WHERE source='claude-code' AND session!='' AND ts>=? GROUP BY session ORDER BY MAX(ts) DESC LIMIT 12").expect("prepare query");
+        WHERE source='claude-code' AND session!='' AND ts>=? GROUP BY session ORDER BY MAX(ts) DESC LIMIT 150").expect("prepare query");
     let rows: Vec<(String, String, i64, i64, i64, i64)> = st
         .query_map([now - 7 * 86400], |r| {
             Ok((
@@ -1120,14 +1128,14 @@ fn trace_report(c: &Connection) {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap_or((0, 0));
-        let mut ts = c.prepare("SELECT tool, COUNT(*), SUM(err) FROM tools WHERE sess=? GROUP BY tool ORDER BY COUNT(*) DESC LIMIT 5").expect("prepare query");
+        let mut ts = c.prepare("SELECT tool, COUNT(*), SUM(err) FROM tools WHERE sess=? GROUP BY tool ORDER BY COUNT(*) DESC LIMIT 12").expect("prepare query");
         let top: Vec<Value> = ts.query_map([&sess], |r| Ok(json!({"name": r.get::<_,String>(0)?, "n": r.get::<_,i64>(1)?, "err": r.get::<_,i64>(2)?}))).expect("run query").map(|row| row.expect("decode query row")).collect();
-        let mut fs_ = c.prepare("SELECT tool, COALESCE(arg,''), COALESCE(msg,'') FROM tools WHERE sess=? AND err=1 ORDER BY ts DESC LIMIT 8").expect("prepare query");
+        let mut fs_ = c.prepare("SELECT tool, COALESCE(arg,''), COALESCE(msg,'') FROM tools WHERE sess=? AND err=1 ORDER BY ts DESC LIMIT 30").expect("prepare query");
         let fails: Vec<Value> = fs_.query_map([&sess], |r| { let m: String = r.get(2)?; Ok(json!({"tool": r.get::<_,String>(0)?, "arg": r.get::<_,String>(1)?, "kind": fail_kind(&m), "msg": m})) }).expect("run query").map(|row| row.expect("decode query row")).collect();
         sessions.push(json!({"id": sess, "fails": fails, "project": aliases.get(&proj).cloned().unwrap_or(proj), "model": model, "start": t0, "end": t1,
             "tokens": tok, "calls": calls, "tools": nt, "errors": ne, "top": top}));
     }
-    let mut tt = c.prepare("SELECT tool, COUNT(*), SUM(err) FROM tools WHERE ts>=? GROUP BY tool ORDER BY COUNT(*) DESC LIMIT 6").expect("prepare query");
+    let mut tt = c.prepare("SELECT tool, COUNT(*), SUM(err) FROM tools WHERE ts>=? GROUP BY tool ORDER BY COUNT(*) DESC LIMIT 20").expect("prepare query");
     let top24: Vec<Value> = tt.query_map([now - 86400], |r| Ok(json!({"name": r.get::<_,String>(0)?, "n": r.get::<_,i64>(1)?, "err": r.get::<_,i64>(2)?}))).expect("run query").map(|row| row.expect("decode query row")).collect();
     let (n24, e24): (i64, i64) = c
         .query_row(
@@ -1148,10 +1156,44 @@ fn trace_report(c: &Connection) {
     for f in &all {
         *kinds.entry(fail_kind(&f.2)).or_insert(0) += 1;
     }
-    let recent: Vec<Value> = all.iter().take(8).map(|f| json!({"tool": f.0, "arg": f.1, "msg": f.2, "kind": fail_kind(&f.2), "ts": f.3, "project": aliases.get(&f.4).cloned().unwrap_or(f.4.clone())})).collect();
+    let mut fd = c
+        .prepare("SELECT ts, err, COALESCE(msg,'') FROM tools WHERE ts>=?")
+        .expect("prepare query");
+    let mut daily = vec![(0i64, 0i64, 0i64, 0i64); 7];
+    let day0 = day_start(6);
+    for (ts, err, msg) in fd
+        .query_map([day0], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .expect("run query")
+        .flatten()
+    {
+        let Some(d) = (0..7).rev().find(|k| ts >= day_start(6 - k)) else {
+            continue;
+        };
+        let e = &mut daily[usize::try_from(d).unwrap_or(0)];
+        e.0 += 1;
+        if err == 1 {
+            match fail_kind(&msg) {
+                "exit" => e.1 += 1,
+                "blocked" => e.2 += 1,
+                _ => e.3 += 1,
+            }
+        }
+    }
+    let fails_daily: Vec<Value> = daily
+        .iter()
+        .enumerate()
+        .map(|(k, d)| json!({"day": day_start(6 - i64::try_from(k).unwrap_or(0)), "calls": d.0, "exit": d.1, "blocked": d.2, "error": d.3}))
+        .collect();
+    let recent: Vec<Value> = all.iter().take(40).map(|f| json!({"tool": f.0, "arg": f.1, "msg": f.2, "kind": fail_kind(&f.2), "ts": f.3, "project": aliases.get(&f.4).cloned().unwrap_or(f.4.clone())})).collect();
     println!(
         "{}",
-        json!({"sessions": sessions, "tools_24h": n24, "errors_24h": e24, "top_24h": top24, "kinds_24h": kinds, "recent_fails": recent})
+        json!({"sessions": sessions, "tools_24h": n24, "errors_24h": e24, "top_24h": top24, "kinds_24h": kinds, "recent_fails": recent, "daily": fails_daily})
     );
 }
 
@@ -1512,15 +1554,21 @@ fn all_repos() -> (Option<PathBuf>, Vec<(String, PathBuf, String)>) {
     (Some(ws), repos)
 }
 
-fn backtrail_repos() -> (Option<PathBuf>, Vec<(String, PathBuf)>) {
-    let (ws, all) = all_repos();
-    (
-        ws,
-        all.into_iter()
-            .filter(|r| r.2 == "moving")
-            .map(|r| (r.0, r.1))
-            .collect(),
-    )
+fn workspace_repos() -> (Option<PathBuf>, Vec<(String, PathBuf, String)>) {
+    let (ws, mut repos) = all_repos();
+    repos.retain(|r| r.2 != "dropped");
+    let known: Vec<PathBuf> = repos.iter().map(|r| r.1.clone()).collect();
+    if let Some(dir) = ws.as_ref().and_then(|w| fs::read_dir(w).ok()) {
+        for p in dir.flatten().map(|e| e.path()) {
+            if p.join(".git").exists() && !known.contains(&p) {
+                let name = p
+                    .file_name()
+                    .map_or(String::new(), |n| n.to_string_lossy().to_string());
+                repos.push((name, p, String::new()));
+            }
+        }
+    }
+    (ws, repos)
 }
 
 const USE_GAP: i64 = 600;
@@ -1802,7 +1850,7 @@ fn usage_report() {
 }
 
 fn projects_report() {
-    let (root, found) = backtrail_repos();
+    let (root, found) = workspace_repos();
     let Some(root) = root else {
         println!("{}", serde_json::json!({"root": null, "projects": []}));
         return;
@@ -1918,7 +1966,7 @@ fn projects_report() {
         let mut p = ports.remove(&i).unwrap_or_default();
         p.sort_unstable(); p.dedup();
         serde_json::json!({
-            "name": found[i].0,
+            "name": found[i].0, "state": found[i].2,
             "path": dir, "running": running, "down": down, "ports": p,
             "remote": !out_of("git", &["-C", &dir, "remote"]).trim().is_empty(),
             "upstream": status.contains("# branch.upstream "),
@@ -2032,6 +2080,10 @@ fn main() {
         time_cmd(&a);
         return;
     }
+    if a.get(1).map(String::as_str) == Some("pace") {
+        pace::report();
+        return;
+    }
     if a.get(1).map(String::as_str) == Some("usage") {
         usage_report();
         return;
@@ -2052,7 +2104,7 @@ fn main() {
         Some("net") => net_report(&c),
         Some("month") => month_report(&c, a.get(2).and_then(|s| s.parse().ok()).unwrap_or(0)),
         _ => eprintln!(
-            "usage: aimon [today | by-project N | by-model N | month [N] | snapshot | trace | net | scan | log ...]\n       aimon usage | projects | security | use <target> | config <claude_limits|ollama> <on|off>"
+            "usage: aimon [today | by-project N | by-model N | month [N] | snapshot | trace | net | scan | log ...]\n       aimon usage | pace | projects | security | use <target> | config <claude_limits|ollama> <on|off>"
         ),
     }
 }
