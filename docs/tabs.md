@@ -14,6 +14,8 @@ The plan ring, API spend this month, tokens in 7 days and failed tool calls in 2
 
 ## Projects
 
+![The Projects page](projects-dark.png)
+
 Every repository of a Backtrail thread that is not dropped, plus every other git repository at the top of the workspace, grouped as in development, built, and parked and other. A card shows the repository's commit days in the last 28 as a strip (orange below 5 days), its running service and port, push state, time in its app in the last 7 days and a shield for a security finding. A click opens one panel under the group: commit days, time in its app, services, git state, stopped agents, the security finding and a year of days in its app.
 
 Data sources:

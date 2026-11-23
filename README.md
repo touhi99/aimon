@@ -5,17 +5,17 @@
 A macOS menu bar app that shows model usage and cost, Claude Code sessions and tool calls, network traffic per process, and the state of local project repositories.
 
 <p align="center">
-<img src="docs/popover-dark.png" alt="The Spend tab" width="420">
-<img src="docs/projects-dark.png" alt="The Projects tab" width="420">
+<img src="docs/popover-dark.png" alt="The menu bar popover" width="300">
+<img src="docs/overview-dark.png" alt="The Overview page" width="540">
 </p>
 
-## Tabs
+The menu bar popover is the glance; the window holds the detail:
 
+- **Overview**: headline numbers, attention cards and 8-week trends.
+- **Projects**: one card per repository with its activity, services and push state (needs Backtrail).
 - **Spend**: tokens and estimated cost per project and model, plan limits.
-- **Trace**: Claude Code tool calls, failures and sessions.
+- **Activity**: Claude Code tool calls, failures and sessions.
 - **Network**: outbound connections per process and host.
-- **Projects**: LaunchAgents, listening ports and unpushed work per repository (needs Backtrail).
-- **Use**: when each project was last used (needs Backtrail).
 
 Details: [docs/tabs.md](docs/tabs.md).
 
@@ -24,7 +24,7 @@ Details: [docs/tabs.md](docs/tabs.md).
 - Claude Code session logs in `~/.claude/projects` supply usage. The project is the last folder of the working directory.
 - Other tools append one JSON line per model call to the inbox folder (see below).
 - Usage is stored in `~/Library/Application Support/aimon/aimon.db`.
-- The Network tab samples `nettop` and `lsof` while the app runs.
+- The Network page samples `nettop` and `lsof` while the app runs.
 
 ## Requirements
 
@@ -48,7 +48,7 @@ cd aimon
 - **Claude Code logs**: model, token counts, timestamp and working folder per call.
 - **Plan limits** (off by default, `aimon config claude_limits on`): reads the Claude Code token from the macOS Keychain and sends it to `api.anthropic.com/api/oauth/usage`, an undocumented endpoint.
 - **Ollama cloud spend** (off by default, `aimon config ollama on`): signs a request to `ollama.com/api/usage` with `~/.ollama/id_ed25519`. The key stays local.
-- **Projects and Use tabs**: the Backtrail files in `~/Library/Application Support/Backtrail`, `git`, `launchctl`, `plutil`, `lsof`, `mdls` and `find`.
+- **Projects page and Overview trends**: the Backtrail files in `~/Library/Application Support/Backtrail`, `git`, `launchctl`, `plutil`, `lsof`, `mdls` and `find`.
 
 Cost figures are estimates from a price list.
 
