@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 
 private let violet = Color(hex: 0xc084fc)
@@ -7,10 +8,12 @@ struct NetworkPage: View {
     @State private var open: String?
 
     var body: some View {
-        if let n = store.net {
+        if store.netDays > 1 {
+            history(store.netHistory)
+        } else if let n = store.net {
             let top = Double(max(n.procs.map { max($0.in, $0.out) }.max() ?? 1, 1))
             VStack(alignment: .leading, spacing: 14) {
-                Label13("Traffic per process, 24 h", trailing: "click a process for its hosts")
+                header("click a process for its hosts")
                 if n.procs.isEmpty {
                     Text("Nothing sampled yet.").font(.system(size: 13)).foregroundStyle(Color.hMut)
                 }
@@ -29,6 +32,79 @@ struct NetworkPage: View {
         }
     }
 
+    private func header(_ hint: String?) -> some View {
+        PanelHeader(title: "Traffic per process", hint: hint,
+                    options: [(days: 1, label: "24H"), (days: 90, label: "90D"), (days: 365, label: "1Y")],
+                    value: store.netDays, pick: store.setNetDays)
+    }
+
+    private func history(_ h: NetHistory?) -> some View {
+        let days = h?.daily ?? []
+        let procs = h?.procs ?? []
+        let top = Double(max(procs.map { max($0.in, $0.out) }.max() ?? 1, 1))
+        let since = h?.first.flatMap { f in
+            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+            return fmt.date(from: f)?.formatted(.dateTime.month(.abbreviated).day())
+        }
+        return VStack(alignment: .leading, spacing: 14) {
+            header(since.map { "kept since \($0)" })
+            if h == nil {
+                Text("Reading history…").font(.system(size: 13)).foregroundStyle(Color.hMut)
+            } else {
+                Chart(days) { d in
+                    BarMark(x: .value("day", Date(timeIntervalSince1970: TimeInterval(d.day)), unit: .day), y: .value("bytes", d.out))
+                        .foregroundStyle(by: .value("dir", "sent"))
+                    BarMark(x: .value("day", Date(timeIntervalSince1970: TimeInterval(d.day)), unit: .day), y: .value("bytes", d.in))
+                        .foregroundStyle(by: .value("dir", "received"))
+                }
+                .chartForegroundStyleScale(["sent": violet, "received": violet.opacity(0.4)])
+                .chartLegend(.hidden)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { v in
+                        AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
+                        AxisValueLabel { if let b = v.as(Int.self) { Text(Fmt.bytes(b)).foregroundStyle(Color.hMut) } }
+                    }
+                }
+                .chartXAxis {
+                    if store.netDays > 90 {
+                        AxisMarks(values: .stride(by: .month)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated)).foregroundStyle(Color.hMut) }
+                    } else {
+                        AxisMarks(values: .stride(by: .day, count: 14)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()).foregroundStyle(Color.hMut) }
+                    }
+                }
+                .frame(height: 150)
+                VStack(spacing: 2) {
+                    ForEach(procs) { p in
+                        HStack(spacing: 12) {
+                            Circle().fill(p.ai ? violet : Color.white.opacity(0.18)).frame(width: 8, height: 8)
+                            Text(p.name).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Color.hInk).lineLimit(1).frame(width: 210, alignment: .leading)
+                            bars(out: p.out, in: p.in, top: top, tint: p.ai ? violet : Color(hex: 0x71717a))
+                            Text("↑ \(Fmt.bytes(p.out))").font(.system(size: 12.5, weight: .semibold)).monospacedDigit().foregroundStyle(Color.hInk).frame(width: 76, alignment: .trailing)
+                            Text("↓ \(Fmt.bytes(p.in))").font(.system(size: 12.5)).monospacedDigit().foregroundStyle(Color.hMut).frame(width: 76, alignment: .trailing)
+                        }
+                        .frame(height: 34).padding(.horizontal, 8)
+                    }
+                }
+                HStack(spacing: 16) {
+                    legend(violet, "AI process")
+                    Spacer()
+                    Text("Open connections show on 24H").font(.system(size: 12)).foregroundStyle(Color.hMut)
+                }
+            }
+        }
+        .padding(20).housePanel()
+    }
+
+    private func bars(out: Int, in inb: Int, top: Double, tint: Color) -> some View {
+        GeometryReader { g in
+            HStack(spacing: 2) {
+                Capsule().fill(tint).frame(width: max(3, g.size.width * (Double(out) / top).squareRoot() * 0.5))
+                Capsule().fill(tint.opacity(0.4)).frame(width: max(3, g.size.width * (Double(inb) / top).squareRoot() * 0.5))
+            }
+            .frame(height: 10).frame(maxHeight: .infinity)
+        }
+    }
+
     private func legend(_ c: Color, _ t: String) -> some View {
         HStack(spacing: 6) {
             Circle().fill(c).frame(width: 8, height: 8)
@@ -44,13 +120,7 @@ struct NetworkPage: View {
                 HStack(spacing: 12) {
                     Circle().fill(p.ai ? violet : Color.white.opacity(0.18)).frame(width: 8, height: 8)
                     Text(p.name).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Color.hInk).lineLimit(1).frame(width: 210, alignment: .leading)
-                    GeometryReader { g in
-                        HStack(spacing: 2) {
-                            Capsule().fill(tint).frame(width: max(3, g.size.width * (Double(p.out) / top).squareRoot() * 0.5))
-                            Capsule().fill(tint.opacity(0.4)).frame(width: max(3, g.size.width * (Double(p.in) / top).squareRoot() * 0.5))
-                        }
-                        .frame(height: 10).frame(maxHeight: .infinity)
-                    }
+                    bars(out: p.out, in: p.in, top: top, tint: tint)
                     if p.unknown > 0 { Pill(text: "\(p.unknown) unknown", tint: .hOrange) }
                     Text("↑ \(Fmt.bytes(p.out))").font(.system(size: 12.5, weight: .semibold)).monospacedDigit().foregroundStyle(Color.hInk).frame(width: 76, alignment: .trailing)
                     Text("↓ \(Fmt.bytes(p.in))").font(.system(size: 12.5)).monospacedDigit().foregroundStyle(Color.hMut).frame(width: 76, alignment: .trailing)

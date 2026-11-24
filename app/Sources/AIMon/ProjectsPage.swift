@@ -118,7 +118,8 @@ struct ProjectsPage: View {
                         Pill(text: Fmt.duration(u.secs7), tint: .hSoft, icon: "clock").help("Time in its app, last 7 days")
                     }
                     if let s = securityIssue(it.row?.security) {
-                        Pill(text: "", tint: s.1, icon: "exclamationmark.shield.fill").help(s.0)
+                        Pill(text: "", tint: s.1, icon: "exclamationmark.shield.fill")
+                            .help(([s.0] + (it.row?.security?.items?.map(\.short) ?? [])).joined(separator: "\n"))
                     }
                     Spacer(minLength: 0)
                 }
@@ -168,16 +169,30 @@ struct ProjectsPage: View {
             }
             if let s = securityIssue(it.row?.security) {
                 Label(s.0, systemImage: "exclamationmark.shield.fill").font(.system(size: 13, weight: .medium)).foregroundStyle(s.1)
+                ForEach(it.row?.security?.items ?? []) { i in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(i.short).font(.system(size: 12.5, weight: .semibold, design: .monospaced)).foregroundStyle(Color.hInk)
+                        if !i.summary.isEmpty { Text(i.summary).font(.system(size: 12.5)).foregroundStyle(Color.hMut) }
+                    }
+                    .textSelection(.enabled).padding(.leading, 22)
+                }
+            }
+            if let path = it.row?.path {
+                VStack(alignment: .leading, spacing: 8) {
+                    let year = store.commitYears[path]
+                    Label13("Commit days, last year", trailing: year.map { "\($0.days.count) days, \($0.counts.reduce(0, +)) commits" })
+                    if let year {
+                        YearGrid(commits: year)
+                    } else {
+                        strip(it.pace?.strip ?? [], tint: emerald, height: 26)
+                    }
+                }
+                .task(id: path) { store.loadCommits(path) }
             }
             if let u = it.use {
                 VStack(alignment: .leading, spacing: 8) {
                     Label13("Days in its app, last year")
                     YearGrid(row: u, since: store.usage?.since)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label13("Commit days, last 4 weeks")
-                    strip(it.pace?.strip ?? [], tint: emerald, height: 26)
                 }
             }
             if let p = it.row?.path {
@@ -201,8 +216,22 @@ struct ProjectsPage: View {
 }
 
 struct YearGrid: View {
-    let row: UseRow
+    let used: [String: Int]
     let since: Int?
+    let describe: (Int) -> String
+
+    init(row: UseRow, since: Int?) {
+        let byTime = row.day_secs.contains { $0 > 0 }
+        used = Dictionary(uniqueKeysWithValues: zip(row.days, byTime ? row.day_secs : row.counts)).filter { $0.value > 0 }
+        self.since = since
+        describe = { byTime ? Fmt.duration($0) : "\($0) opens" }
+    }
+
+    init(commits: CommitYear) {
+        used = Dictionary(uniqueKeysWithValues: zip(commits.days, commits.counts))
+        since = nil
+        describe = { $0 == 1 ? "1 commit" : "\($0) commits" }
+    }
 
     var body: some View {
         let cal = Calendar(identifier: .iso8601)
@@ -212,8 +241,6 @@ struct YearGrid: View {
         let start = cal.date(byAdding: .weekOfYear, value: -52, to: thisMonday)!
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        let byTime = row.day_secs.contains { $0 > 0 }
-        let used = Dictionary(uniqueKeysWithValues: zip(row.days, byTime ? row.day_secs : row.counts)).filter { $0.value > 0 }
         let top = max(1, used.values.max() ?? 1)
         let weeks = (0...52).map { cal.date(byAdding: .weekOfYear, value: $0, to: start)! }
         return GeometryReader { g in
@@ -228,7 +255,7 @@ struct YearGrid: View {
                                 .fill(day > today ? Color.clear : v.map { emerald.opacity(0.3 + 0.7 * (Double($0) / Double(top)).squareRoot()) }
                                     ?? Color.white.opacity(day < tracked ? 0.025 : 0.06))
                                 .frame(width: cell, height: cell)
-                                .help(day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)) + (v.map { " · " + (byTime ? Fmt.duration($0) : "\($0) opens") } ?? ""))
+                                .help(day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)) + (v.map { " · " + describe($0) } ?? ""))
                         }
                     }
                 }

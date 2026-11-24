@@ -21,6 +21,7 @@ struct AppWindowView: View {
         PageEntry(id: 0, label: "Spend", icon: "dollarsign.circle"),
         PageEntry(id: 1, label: "Activity", icon: "waveform.path.ecg"),
         PageEntry(id: 2, label: "Network", icon: "network"),
+        PageEntry(id: 5, label: "Logs", icon: "doc.text.magnifyingglass"),
     ]
 
     var body: some View {
@@ -38,6 +39,7 @@ struct AppWindowView: View {
                         case 1: ActivityPage(store: store)
                         case 2: NetworkPage(store: store)
                         case 3: ProjectsPage(store: store, nav: nav)
+                        case 5: LogsPage(store: store, nav: nav)
                         default: OverviewView(store: store, nav: nav)
                         }
                     }

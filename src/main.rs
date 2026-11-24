@@ -1,4 +1,7 @@
+mod history;
+mod logs;
 mod pace;
+mod tokens;
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection};
@@ -34,6 +37,8 @@ fn data_dir() -> PathBuf {
 
 fn open_db() -> Connection {
     let c = Connection::open(data_dir().join("aimon.db")).expect("open aimon.db");
+    c.busy_timeout(std::time::Duration::from_secs(10))
+        .expect("set busy timeout");
     let ver: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap_or(0);
@@ -61,9 +66,13 @@ fn open_db() -> Connection {
         CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, off INTEGER);
         CREATE TABLE IF NOT EXISTS tools(id TEXT PRIMARY KEY, ts INTEGER, sess TEXT, project TEXT, tool TEXT, err INTEGER DEFAULT 0);
         CREATE INDEX IF NOT EXISTS tools_sess ON tools(sess);
+        CREATE INDEX IF NOT EXISTS tools_ts ON tools(ts);
         CREATE TABLE IF NOT EXISTS netprev(k TEXT PRIMARY KEY, bin INTEGER, bout INTEGER);
         CREATE TABLE IF NOT EXISTS net(ts INTEGER, proc TEXT, din INTEGER, dout INTEGER);
         CREATE INDEX IF NOT EXISTS net_ts ON net(ts);
+        CREATE TABLE IF NOT EXISTS logmark(path TEXT, off INTEGER, ts INTEGER, pid INTEGER, base INTEGER);
+        CREATE INDEX IF NOT EXISTS logmark_path ON logmark(path, off);
+        CREATE TABLE IF NOT EXISTS netday(day TEXT, proc TEXT, din INTEGER, dout INTEGER, PRIMARY KEY(day, proc));
         CREATE TABLE IF NOT EXISTS rdns(ip TEXT PRIMARY KEY, name TEXT);
         CREATE TABLE IF NOT EXISTS fwd(host TEXT PRIMARY KEY, ips TEXT, ts INTEGER);
         CREATE TABLE IF NOT EXISTS pidlabel(pid TEXT, base TEXT, label TEXT, PRIMARY KEY(pid, base));
@@ -72,6 +81,12 @@ fn open_db() -> Connection {
         CREATE TABLE IF NOT EXISTS spent(day TEXT, key TEXT, secs INTEGER, PRIMARY KEY(day, key));
     ").expect("write to database");
     c.execute("ALTER TABLE tools ADD COLUMN arg TEXT", []).ok();
+    c.execute(
+        "INSERT OR IGNORE INTO netday SELECT date(ts, 'unixepoch', 'localtime'), proc, SUM(din), SUM(dout) FROM net
+         WHERE NOT EXISTS (SELECT 1 FROM netday) GROUP BY 1, 2",
+        [],
+    )
+    .expect("write to database");
     c.execute("ALTER TABLE tools ADD COLUMN msg TEXT", []).ok();
     c
 }
@@ -80,7 +95,8 @@ fn scan_inbox(c: &Connection) {
     let dir = data_dir().join("inbox");
     fs::create_dir_all(&dir).ok();
     let Ok(rd) = fs::read_dir(&dir) else { return };
-    let tx = c.unchecked_transaction().expect("begin transaction");
+    let tx = rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)
+        .expect("begin transaction");
     for f in rd.flatten() {
         let path = f.path();
         if path.extension().is_none_or(|e| e != "jsonl") {
@@ -214,16 +230,24 @@ fn repo_name(cwd: &str) -> String {
     if let Some(root) = Path::new(cwd).ancestors().find(|a| a.join(".git").exists()) {
         return last(root);
     }
-    let holds_repos = fs::read_dir(cwd)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|e| e.path().join(".git").exists());
-    if holds_repos {
-        format!("{} (workspace)", last(Path::new(cwd)))
-    } else {
-        last(Path::new(cwd))
+    let holds_repos = |dir: &Path| {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.path().join(".git").exists())
+    };
+    let home = home();
+    if Path::new(cwd).is_dir() {
+        if let Some(ws) = Path::new(cwd)
+            .ancestors()
+            .take_while(|a| *a != home && a.starts_with(&home))
+            .find(|a| holds_repos(a))
+        {
+            return format!("{} (workspace)", last(ws));
+        }
     }
+    last(Path::new(cwd))
 }
 
 fn scan(c: &mut Connection) -> (usize, usize) {
@@ -241,7 +265,9 @@ fn scan(c: &mut Connection) -> (usize, usize) {
             }
         }
     }
-    let tx = c.transaction().expect("begin transaction");
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .expect("begin transaction");
     let (mut nfiles, mut ncalls) = (0, 0);
     for p in files {
         let key = p.to_string_lossy().to_string();
@@ -777,7 +803,8 @@ fn snapshot(c: &Connection) {
             .expect("local midnight exists")
             .timestamp()
     };
-    let since = day_start(13).min(month0);
+    let fortnight0 = day_start(13);
+    let since = fortnight0.min(month0);
     let mut st = c.prepare("SELECT ts, source, project, model, inp, out, cread, cw5, cw1, kind, cost_override FROM calls WHERE ts>=?").expect("prepare query");
     let rows: Vec<CallRow> = st
         .query_map([since], |r| {
@@ -819,12 +846,17 @@ fn snapshot(c: &Connection) {
         } else {
             13 - usize::try_from(((today0 - ts + 86399) / 86400).min(13)).unwrap_or(0)
         };
-        daily_tokens[didx] += tok;
+        let in_chart = *ts >= fortnight0;
+        if in_chart {
+            daily_tokens[didx] += tok;
+        }
         let cost = over
             .or_else(|| cost_of(&prices, m, *i, *o, *cr, *w5, *w1))
             .unwrap_or(0.0);
         if kind == "api" || (no_plan && kind == "claude_sub") {
-            api_daily[didx] += cost;
+            if in_chart {
+                api_daily[didx] += cost;
+            }
             if *ts >= today0 {
                 api_today += cost;
             }
@@ -846,7 +878,7 @@ fn snapshot(c: &Connection) {
                 e.1 += tok;
             }
         }
-        if source == "claude-code" || source == "log" {
+        if in_chart && (source == "claude-code" || source == "log") {
             proj_daily
                 .entry(aliases.get(pr).cloned().unwrap_or_else(|| pr.clone()))
                 .or_insert_with(|| vec![0; 14])[didx] += i + o;
@@ -1098,14 +1130,17 @@ fn fail_kind(msg: &str) -> &'static str {
     }
 }
 
-fn trace_report(c: &Connection) {
+fn sessions_in(
+    c: &Connection,
+    aliases: &HashMap<String, String>,
+    from: i64,
+    to: i64,
+) -> Vec<Value> {
     use serde_json::json;
-    let aliases = load_aliases();
-    let now = Local::now().timestamp();
     let mut st = c.prepare("SELECT session, MIN(project), MIN(ts), MAX(ts), SUM(inp+out+cread+cw5+cw1), COUNT(*) FROM calls
-        WHERE source='claude-code' AND session!='' AND ts>=? GROUP BY session ORDER BY MAX(ts) DESC LIMIT 150").expect("prepare query");
+        WHERE source='claude-code' AND session!='' AND ts>=? AND ts<? GROUP BY session ORDER BY MAX(ts) DESC LIMIT 150").expect("prepare query");
     let rows: Vec<(String, String, i64, i64, i64, i64)> = st
-        .query_map([now - 7 * 86400], |r| {
+        .query_map([from, to], |r| {
             Ok((
                 r.get(0)?,
                 r.get(1)?,
@@ -1135,6 +1170,14 @@ fn trace_report(c: &Connection) {
         sessions.push(json!({"id": sess, "fails": fails, "project": aliases.get(&proj).cloned().unwrap_or(proj), "model": model, "start": t0, "end": t1,
             "tokens": tok, "calls": calls, "tools": nt, "errors": ne, "top": top}));
     }
+    sessions
+}
+
+fn trace_report(c: &Connection) {
+    use serde_json::json;
+    let aliases = load_aliases();
+    let now = Local::now().timestamp();
+    let sessions = sessions_in(c, &aliases, now - 7 * 86400, i64::MAX);
     let mut tt = c.prepare("SELECT tool, COUNT(*), SUM(err) FROM tools WHERE ts>=? GROUP BY tool ORDER BY COUNT(*) DESC LIMIT 20").expect("prepare query");
     let top24: Vec<Value> = tt.query_map([now - 86400], |r| Ok(json!({"name": r.get::<_,String>(0)?, "n": r.get::<_,i64>(1)?, "err": r.get::<_,i64>(2)?}))).expect("run query").map(|row| row.expect("decode query row")).collect();
     let (n24, e24): (i64, i64) = c
@@ -1290,6 +1333,12 @@ fn pid_label(c: &Connection, pid: &str, base: &str) -> String {
     label
 }
 
+fn is_ai_proc(n: &str) -> bool {
+    ["claude", "ollama", "python", "node", "aimon"]
+        .iter()
+        .any(|a| n.starts_with(a))
+}
+
 fn net_report(c: &Connection) {
     use serde_json::json;
     let now = Local::now().timestamp();
@@ -1322,9 +1371,16 @@ fn net_report(c: &Connection) {
             };
             if di + dout > 0 {
                 let pid = f[0].rsplit_once('.').map_or("0", |x| x.1);
+                let label = pid_label(c, pid, &proc_name(f[0]));
                 c.execute(
                     "INSERT INTO net VALUES(?,?,?,?)",
-                    params![now, pid_label(c, pid, &proc_name(f[0])), di, dout],
+                    params![now, label, di, dout],
+                )
+                .expect("write to database");
+                c.execute(
+                    "INSERT INTO netday VALUES(date(?, 'unixepoch', 'localtime'), ?, ?, ?)
+                     ON CONFLICT(day, proc) DO UPDATE SET din = din + excluded.din, dout = dout + excluded.dout",
+                    params![now, label, di, dout],
                 )
                 .expect("write to database");
             }
@@ -1481,12 +1537,7 @@ fn net_report(c: &Connection) {
             names.push(k.clone());
         }
     }
-    let is_ai = |n: &str| {
-        ["claude", "ollama"].iter().any(|a| n.starts_with(a))
-            || n.starts_with("python")
-            || n.starts_with("node")
-            || n.starts_with("aimon")
-    };
+    let is_ai = is_ai_proc;
     let mut procs: Vec<Value> = names.iter().map(|n| {
         let (bi, bo) = rows.iter().find(|r| &r.0 == n).map_or((0, 0), |r| (r.1, r.2));
         let mine: Vec<&(String,String,String,String)> = conns.iter().filter(|x| &x.0 == n).collect();
@@ -1972,7 +2023,7 @@ fn projects_report() {
             "upstream": status.contains("# branch.upstream "),
             "ahead": ahead,
             "changed": status.lines().filter(|l| !l.starts_with('#')).count(),
-            "security": security.get(&*dir).map(|s| serde_json::json!({"secrets": s["secrets"], "advisories": s["advisories"], "checked": s["checked"]})),
+            "security": security.get(&*dir).map(|s| serde_json::json!({"secrets": s["secrets"], "advisories": s["advisories"], "items": s["items"], "checked": s["checked"]})),
         })
     }).collect();
     rows.sort_by_key(|r| {
@@ -2031,6 +2082,16 @@ fn security_report() {
             "clean"
         };
         println!("{name:<width$}  {state:<10}  secrets {s}  advisories {d}");
+        for i in r["items"].as_array().into_iter().flatten() {
+            println!(
+                "{:width$}    {} {} {}: {}",
+                "",
+                i["package"].as_str().unwrap_or("?"),
+                i["version"].as_str().unwrap_or("?"),
+                i["id"].as_str().unwrap_or("?"),
+                i["summary"].as_str().unwrap_or("")
+            );
+        }
     }
     let (s, d): (i64, i64) = repos.iter().fold((0, 0), |a, r| {
         (
@@ -2084,6 +2145,14 @@ fn main() {
         pace::report();
         return;
     }
+    if a.get(1).map(String::as_str) == Some("logs") {
+        logs::report();
+        return;
+    }
+    if a.get(1).map(String::as_str) == Some("commits") {
+        history::commits(a.get(2).map_or(".", String::as_str));
+        return;
+    }
     if a.get(1).map(String::as_str) == Some("usage") {
         usage_report();
         return;
@@ -2102,9 +2171,13 @@ fn main() {
         Some("snapshot") => snapshot(&c),
         Some("trace") => trace_report(&c),
         Some("net") => net_report(&c),
+        Some("fails") => history::fails(&c, days.max(7)),
+        Some("sessions") => history::sessions(&c, a.get(2).and_then(|s| s.parse().ok()).unwrap_or_else(|| day_start(0))),
+        Some("netdays") => history::net_days(&c, days.max(1)),
+        Some("tokens") => tokens::report(&c, a.get(2).and_then(|s| s.parse().ok()).unwrap_or(14)),
         Some("month") => month_report(&c, a.get(2).and_then(|s| s.parse().ok()).unwrap_or(0)),
         _ => eprintln!(
-            "usage: aimon [today | by-project N | by-model N | month [N] | snapshot | trace | net | scan | log ...]\n       aimon usage | pace | projects | security | use <target> | config <claude_limits|ollama> <on|off>"
+            "usage: aimon [today | by-project N | by-model N | month [N] | tokens [DAYS] | fails N | sessions DAY_TS | netdays N | commits PATH | logs | snapshot | trace | net | scan | log ...]\n       aimon usage | pace | projects | security | use <target> | config <claude_limits|ollama> <on|off>"
         ),
     }
 }

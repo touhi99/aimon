@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let id = Bundle.main.bundleIdentifier ?? "dev.aimon.app"
         let me = ProcessInfo.processInfo.processIdentifier
         if NSRunningApplication.runningApplications(withBundleIdentifier: id).contains(where: { $0.processIdentifier != me }) {
-            exit(0)
+            exit(1)
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self

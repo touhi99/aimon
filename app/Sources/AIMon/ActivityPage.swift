@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 
 private let failKinds: [(key: String, label: String, color: Color)] = [
@@ -19,7 +20,11 @@ struct ActivityPage: View {
             let days = t.daily ?? []
             let picked = day ?? days.last?.day ?? 0
             VStack(alignment: .leading, spacing: 16) {
-                fails(days, picked: picked)
+                if store.failDays == 7 {
+                    fails(days, picked: picked)
+                } else {
+                    history(store.failHistory ?? days, picked: picked)
+                }
                 tools(t)
                 sessions(t, day: picked)
             }
@@ -31,7 +36,7 @@ struct ActivityPage: View {
     private func fails(_ days: [TraceDay], picked: Int) -> some View {
         let top = CGFloat(max(days.map(\.fails).max() ?? 1, 1))
         return VStack(alignment: .leading, spacing: 14) {
-            Label13("Failed tool calls per day, 7 days", trailing: "click a day for its sessions")
+            header
             HStack(alignment: .bottom, spacing: 12) {
                 ForEach(days) { d in
                     let on = d.day == picked
@@ -63,16 +68,75 @@ struct ActivityPage: View {
                     .help("\(d.calls) tool calls, \(d.fails) failed")
                 }
             }
-            HStack(spacing: 16) {
-                ForEach(failKinds, id: \.key) { k in
-                    HStack(spacing: 6) {
-                        RoundedRectangle(cornerRadius: 2).fill(k.color).frame(width: 9, height: 9)
-                        Text(k.label).font(.system(size: 12)).foregroundStyle(Color.hMut)
+            kindLegend
+        }
+        .padding(20).housePanel()
+    }
+
+    private var header: some View {
+        PanelHeader(title: "Failed tool calls per day", hint: "click a day for its sessions",
+                    options: [(days: 7, label: "7D"), (days: 90, label: "90D"), (days: 365, label: "1Y")],
+                    value: store.failDays, pick: store.setFailDays)
+    }
+
+    private func history(_ days: [TraceDay], picked: Int) -> some View {
+        let total = days.reduce(0) { $0 + $1.fails }
+        let calls = days.reduce(0) { $0 + $1.calls }
+        return VStack(alignment: .leading, spacing: 14) {
+            header
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(total)").font(.system(size: 30, weight: .semibold)).monospacedDigit().foregroundStyle(Color.hInk)
+                Text(calls > 0 ? "failed of \(calls) tool calls, \(String(format: "%.1f", 100 * Double(total) / Double(calls)))%" : "failed")
+                    .font(.system(size: 13)).foregroundStyle(Color.hMut)
+            }
+            Chart {
+                ForEach(days) { d in
+                    ForEach(failKinds, id: \.key) { k in
+                        BarMark(x: .value("day", Date(timeIntervalSince1970: TimeInterval(d.day)), unit: .day),
+                                y: .value("fails", count(d, k.key)))
+                            .foregroundStyle(k.color)
+                            .opacity(d.day == picked ? 1 : 0.7)
                     }
+                }
+                RuleMark(x: .value("picked", Date(timeIntervalSince1970: TimeInterval(picked)), unit: .day))
+                    .foregroundStyle(Color.white.opacity(0.25)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
+            .chartYAxis(.hidden)
+            .chartXAxis {
+                if store.failDays > 90 {
+                    AxisMarks(values: .stride(by: .month)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated)).foregroundStyle(Color.hMut) }
+                } else {
+                    AxisMarks(values: .stride(by: .day, count: 14)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()).foregroundStyle(Color.hMut) }
+                }
+            }
+            .chartOverlay { proxy in
+                GeometryReader { g in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onTapGesture { loc in
+                            guard let plot = proxy.plotFrame else { return }
+                            let x = loc.x - g[plot].origin.x
+                            guard let date: Date = proxy.value(atX: x) else { return }
+                            let ts = Int(Calendar.current.startOfDay(for: date).timeIntervalSince1970)
+                            withAnimation(.easeOut(duration: 0.15)) { day = ts; open = nil }
+                            store.loadSessions(ts)
+                        }
+                }
+            }
+            .frame(height: 170)
+            kindLegend
+        }
+        .padding(20).housePanel()
+    }
+
+    private var kindLegend: some View {
+        HStack(spacing: 16) {
+            ForEach(failKinds, id: \.key) { k in
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2).fill(k.color).frame(width: 9, height: 9)
+                    Text(k.label).font(.system(size: 12)).foregroundStyle(Color.hMut)
                 }
             }
         }
-        .padding(20).housePanel()
     }
 
     private func tools(_ t: TraceData) -> some View {
@@ -113,11 +177,15 @@ struct ActivityPage: View {
     }
 
     private func sessions(_ t: TraceData, day: Int) -> some View {
-        let list = t.sessions.filter { $0.end >= day && $0.start < day + 86400 }
+        let recent = day >= (t.daily?.first?.day ?? 0)
+        let loaded = recent ? t.sessions : (store.daySessions[day] ?? [])
+        let list = loaded.filter { $0.end >= day && $0.start < day + 86400 }
         let date = Date(timeIntervalSince1970: TimeInterval(day))
         return VStack(alignment: .leading, spacing: 10) {
             Label13("Sessions on " + date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)), trailing: "\(list.count)")
-            if list.isEmpty {
+            if !recent && store.daySessions[day] == nil {
+                Text("Loading sessions…").font(.system(size: 13)).foregroundStyle(Color.hMut).padding(.vertical, 8)
+            } else if list.isEmpty {
                 Text("No Claude Code sessions that day.").font(.system(size: 13)).foregroundStyle(Color.hMut).padding(.vertical, 8)
             }
             VStack(spacing: 2) {

@@ -138,15 +138,18 @@ struct SpendPage: View {
     }
 
     private func tokens(_ s: Snapshot) -> some View {
-        let days = last14(s.daily_tokens.map(Double.init))
+        let n = store.tokenDays
+        let raw = n == 14 ? s.daily_tokens : (store.tokenHistory ?? s.daily_tokens)
+        let days = last14(raw.map(Double.init))
         let cal = Calendar.current
         let sel = hoverTok.flatMap { h in days.first { cal.isDate($0.day, inSameDayAs: h) } }
-        let week = s.daily_tokens.suffix(7).reduce(0, +)
+        let headline = n == 14 ? s.daily_tokens.suffix(7).reduce(0, +) : raw.reduce(0, +)
+        let ranges = [(days: 14, label: "14D"), (days: 90, label: "90D"), (days: 365, label: "1Y")]
         return panel {
-            Label13("Tokens per day, 14 days")
+            PanelHeader(title: "Tokens per day", options: ranges, value: store.tokenDays, pick: store.setTokenDays)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(Fmt.tokens(Int(sel?.value ?? Double(week)))).font(.system(size: 30, weight: .semibold)).monospacedDigit().foregroundStyle(Color.hInk)
-                Text(sel.map { $0.day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) } ?? "last 7 days")
+                Text(Fmt.tokens(Int(sel?.value ?? Double(headline)))).font(.system(size: 30, weight: .semibold)).monospacedDigit().foregroundStyle(Color.hInk)
+                Text(sel.map { $0.day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) } ?? (n == 14 ? "last 7 days" : n == 90 ? "last 90 days" : "last year"))
                     .font(.system(size: 13)).foregroundStyle(Color.hMut)
                 Spacer()
                 Text("\(Int((s.claude.cache_hit * 100).rounded()))% from cache today").font(.system(size: 12.5)).foregroundStyle(Color.hMut)
@@ -164,7 +167,15 @@ struct SpendPage: View {
             }
             .chartXSelection(value: $hoverTok)
             .chartYAxis(.hidden)
-            .chartXAxis { AxisMarks(values: .stride(by: .day, count: 2)) { _ in AxisValueLabel(format: .dateTime.weekday(.abbreviated)).foregroundStyle(Color.hMut) } }
+            .chartXAxis {
+                if n == 14 {
+                    AxisMarks(values: .stride(by: .day, count: 2)) { _ in AxisValueLabel(format: .dateTime.weekday(.abbreviated)).foregroundStyle(Color.hMut) }
+                } else if n == 90 {
+                    AxisMarks(values: .stride(by: .day, count: 14)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()).foregroundStyle(Color.hMut) }
+                } else {
+                    AxisMarks(values: .stride(by: .month)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated)).foregroundStyle(Color.hMut) }
+                }
+            }
             .frame(height: 150)
         }
     }

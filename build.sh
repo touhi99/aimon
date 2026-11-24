@@ -3,7 +3,7 @@ set -e
 cd "$(dirname "$0")"
 cargo build --release
 (cd app && swift build -c release)
-APP=AIMon.app
+APP=app/.build/AIMon.app
 rm -rf $APP && mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
 cp app/.build/release/AIMon $APP/Contents/MacOS/AIMon
 cp target/release/aimon $APP/Contents/Resources/aimon
@@ -28,5 +28,12 @@ cat > $APP/Contents/Info.plist <<P
 <key>LSUIElement</key><true/>
 </dict></plist>
 P
-codesign --force --sign - $APP 2>/dev/null || true
-echo "built $APP"
+codesign --force --sign - $APP
+AGENT=gui/$(id -u)/dev.aimon.app
+LOADED=0
+launchctl print $AGENT >/dev/null 2>&1 && LOADED=1
+[ $LOADED = 1 ] && launchctl bootout $AGENT 2>/dev/null || true
+pkill -x AIMon 2>/dev/null || true
+rm -rf AIMon.app && mv $APP AIMon.app
+[ $LOADED = 1 ] && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.aimon.app.plist
+echo "built AIMon.app"

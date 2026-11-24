@@ -15,7 +15,7 @@ extension Store {
     var attention: [Attention] {
         var out: [Attention] = []
         for p in projects?.projects ?? [] where !p.down.isEmpty {
-            out.append(Attention(level: .red, text: "\(p.name): service stopped", detail: p.down.joined(separator: ", "), page: 3, project: p.name))
+            out.append(Attention(level: .red, text: "\(p.name): service stopped", detail: p.down.joined(separator: ", "), page: 5, project: p.down.first))
         }
         if let l = snap?.limits, l.source == "live" {
             for (name, lim) in [("5-hour session", l.session), ("weekly", l.weekly)] {
@@ -29,10 +29,44 @@ extension Store {
             if s.secrets > 0 {
                 out.append(Attention(level: .red, text: "\(p.name): \(s.secrets) secret\(s.secrets == 1 ? "" : "s") in git history", detail: "security scan", page: 3, project: p.name))
             } else if s.advisories > 0 {
-                out.append(Attention(level: .amber, text: "\(p.name): \(s.advisories) dependency advisor\(s.advisories == 1 ? "y" : "ies")", detail: "security scan", page: 3, project: p.name))
+                out.append(Attention(level: .amber, text: "\(p.name): \(s.advisories) dependency advisor\(s.advisories == 1 ? "y" : "ies")", detail: s.items.map { $0.count == 1 ? $0[0].short : $0.map(\.package).joined(separator: ", ") } ?? "security scan", page: 3, project: p.name))
             }
         }
         return out
+    }
+}
+
+struct TodayProject: Identifiable {
+    var name: String; var secs: Int; var tokens: Int
+    var id: String { name }
+}
+
+extension Store {
+    var todayProjects: [TodayProject] {
+        let start = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        var secs: [String: Int] = [:]
+        for t in trace?.sessions ?? [] where t.end >= start {
+            secs[t.project, default: 0] += t.end - max(t.start, start)
+        }
+        var tokens: [String: Int] = [:]
+        for p in snap?.projects ?? [] { tokens[p.name] = p.daily?.last ?? 0 }
+        return Set(secs.keys).union(tokens.keys)
+            .map { TodayProject(name: $0, secs: secs[$0] ?? 0, tokens: tokens[$0] ?? 0) }
+            .filter { $0.tokens > 0 || $0.secs > 0 }
+            .sorted { ($0.tokens, $0.secs) > ($1.tokens, $1.secs) }
+            .prefix(3).map { $0 }
+    }
+}
+
+private struct TodayStat: View {
+    var label: String
+    var value: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.system(size: 11)).foregroundStyle(Color.hMut)
+            Text(value).font(.system(size: 14, weight: .semibold).monospacedDigit()).foregroundStyle(Color.hInk)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -50,6 +84,32 @@ struct MenuView: View {
                     Text(Fmt.resets(store.snap?.limits.weekly?.resets_at)).font(.system(size: 12.5)).foregroundStyle(Color.hMut)
                 }
                 Spacer()
+            }
+            if store.snap?.limits.source == "live" {
+                HStack(spacing: 8) {
+                    TodayStat(label: "5-hour session", value: store.snap?.limits.session?.pct.map { "\(Int($0.rounded()))%" } ?? "–")
+                    TodayStat(label: "API today", value: Fmt.money(store.snap?.api.today ?? 0))
+                }
+            }
+            if !store.todayProjects.isEmpty {
+                VStack(spacing: 7) {
+                    HStack {
+                        Text("Claude Code today").font(.system(size: 11)).foregroundStyle(Color.hMut)
+                        Spacer()
+                        Text("time").font(.system(size: 11)).foregroundStyle(Color.hMut).frame(width: 64, alignment: .trailing)
+                        Text("tokens").font(.system(size: 11)).foregroundStyle(Color.hMut).frame(width: 52, alignment: .trailing)
+                    }
+                    ForEach(store.todayProjects) { p in
+                        HStack {
+                            Text(p.name).font(.system(size: 13, weight: .medium)).foregroundStyle(Color.hInk).lineLimit(1)
+                            Spacer()
+                            Text(p.secs > 0 ? Fmt.duration(p.secs) : "–").font(.system(size: 12.5).monospacedDigit()).foregroundStyle(Color.hMut)
+                                .frame(width: 64, alignment: .trailing)
+                            Text(Fmt.tokens(p.tokens)).font(.system(size: 12.5).monospacedDigit()).foregroundStyle(Color.hMut)
+                                .frame(width: 52, alignment: .trailing)
+                        }
+                    }
+                }
             }
             if store.attention.isEmpty {
                 Label("Nothing needs attention", systemImage: "checkmark.circle.fill")

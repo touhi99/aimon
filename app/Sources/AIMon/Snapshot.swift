@@ -39,6 +39,36 @@ struct Snapshot: Codable {
     var models: [Named]
 }
 
+struct TraceDays: Codable { var daily: [TraceDay] }
+struct DaySessions: Codable { var sessions: [TraceSession] }
+struct NetDay: Codable, Identifiable {
+    var day: Int; var `in`: Int; var out: Int
+    var id: Int { day }
+}
+struct NetRangeProc: Codable, Identifiable {
+    var name: String; var `in`: Int; var out: Int; var ai: Bool
+    var id: String { name }
+}
+struct NetHistory: Codable { var first: String?; var daily: [NetDay]; var procs: [NetRangeProc] }
+struct CommitYear: Codable { var days: [String]; var counts: [Int] }
+
+struct LogService: Codable, Identifiable {
+    var label: String; var project: String?; var path: String; var kind: String
+    var loaded: Bool; var pid: Int?; var status: Int; var down: Bool
+    var size: Int; var modified: Int?; var errors: Int; var last_error: Int?; var tracked: Int?; var lines: [LogLine]
+    var id: String { label }
+    var failing: Bool { down || status != 0 }
+    var name: String { label.split(separator: ".").dropFirst().joined(separator: ".") }
+}
+struct LogLine: Codable {
+    var t: Int?; var own: Bool; var pid: Int?; var err: Bool; var text: String
+}
+struct LogData: Codable { var dir: String; var services: [LogService] }
+
+struct TokenHistory: Codable {
+    var daily: [Int]
+}
+
 struct MonthView: Codable {
     var label: String
     var first: String
@@ -90,7 +120,11 @@ struct ProjRow: Codable, Identifiable {
     var security: Sec?
     var id: String { path }
 }
-struct Sec: Codable { var secrets: Int; var advisories: Int; var checked: String? }
+struct SecItem: Codable, Identifiable {
+    var package: String; var version: String; var id: String; var summary: String
+    var short: String { "\(package) \(version) · \(id)" }
+}
+struct Sec: Codable { var secrets: Int; var advisories: Int; var items: [SecItem]?; var checked: String? }
 struct ProjData: Codable { var root: String?; var projects: [ProjRow] }
 struct UseRow: Codable, Identifiable {
     var name: String; var path: String; var apps: [String]
@@ -170,6 +204,15 @@ final class Store: ObservableObject {
     @Published var error: String?
     @Published var monthBack = 0
     @Published var month: MonthView?
+    @Published var tokenDays = 14
+    @Published var tokenHistory: [Int]?
+    @Published var failDays = 7
+    @Published var failHistory: [TraceDay]?
+    @Published var daySessions: [Int: [TraceSession]] = [:]
+    @Published var netDays = 1
+    @Published var netHistory: NetHistory?
+    @Published var commitYears: [String: CommitYear] = [:]
+    @Published var logs: LogData?
     @Published var trace: TraceData?
     @Published var net: NetData?
     @Published var projects: ProjData?
@@ -205,19 +248,50 @@ final class Store: ObservableObject {
         if monthBack == 0 { month = nil; return }
         let bin = binary, n = monthBack
         Task.detached {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: bin)
-            p.arguments = ["month", "\(n)"]
-            let out = Pipe()
-            p.standardOutput = out
-            p.standardError = FileHandle.nullDevice
-            guard (try? p.run()) != nil else { return }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            if let m = try? JSONDecoder().decode(MonthView.self, from: data) {
+            if let data = Store.run(bin, ["month", "\(n)"]), let m = try? JSONDecoder().decode(MonthView.self, from: data) {
                 await MainActor.run { if self.monthBack == n { self.month = m } }
             }
         }
+    }
+
+    func setTokenDays(_ n: Int) {
+        tokenDays = n
+        if n == 14 { tokenHistory = nil; return }
+        let bin = binary
+        Task.detached {
+            guard let data = Store.run(bin, ["tokens", "\(n)"]),
+                  let h = try? JSONDecoder().decode(TokenHistory.self, from: data) else { return }
+            await MainActor.run { if self.tokenDays == n { self.tokenHistory = h.daily } }
+        }
+    }
+
+    private func fetch<T: Decodable & Sendable>(_ args: [String], _ type: T.Type, _ apply: @escaping @MainActor (T) -> Void) {
+        let bin = binary
+        Task.detached {
+            guard let data = Store.run(bin, args), let v = try? JSONDecoder().decode(T.self, from: data) else { return }
+            await MainActor.run { apply(v) }
+        }
+    }
+
+    func setFailDays(_ n: Int) {
+        failDays = n
+        if n == 7 { failHistory = nil; return }
+        fetch(["fails", "\(n)"], TraceDays.self) { if self.failDays == n { self.failHistory = $0.daily } }
+    }
+
+    func loadSessions(_ day: Int) {
+        guard daySessions[day] == nil else { return }
+        fetch(["sessions", "\(day)"], DaySessions.self) { self.daySessions[day] = $0.sessions }
+    }
+
+    func setNetDays(_ n: Int) {
+        netDays = n
+        if n == 1 { netHistory = nil; return }
+        fetch(["netdays", "\(n)"], NetHistory.self) { if self.netDays == n { self.netHistory = $0 } }
+    }
+
+    func loadCommits(_ path: String) {
+        fetch(["commits", path], CommitYear.self) { self.commitYears[path] = $0 }
     }
 
     func recordUse(_ key: String) {
@@ -236,10 +310,16 @@ final class Store: ObservableObject {
         p.arguments = args
         let out = Pipe()
         p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
+        let err = Pipe()
+        p.standardError = err
         guard (try? p.run()) != nil else { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
+        if p.terminationStatus != 0 {
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            FileHandle.standardError.write(Data("\(stamp) aimon \(args.joined(separator: " ")) exited \(p.terminationStatus)\n".utf8) + errData)
+        }
         return data
     }
 
@@ -265,6 +345,8 @@ final class Store: ObservableObject {
                 let pc = Store.run(bin, ["pace"]).flatMap { try? JSONDecoder().decode(PaceData.self, from: $0) }
                 await MainActor.run { if let pc { self.pace = pc } }
             }
+            let lg = Store.run(bin, ["logs"]).flatMap { try? JSONDecoder().decode(LogData.self, from: $0) }
+            await MainActor.run { if let lg { self.logs = lg } }
             let n = Store.run(bin, ["net"]).flatMap { try? JSONDecoder().decode(NetData.self, from: $0) }
             let t = Store.run(bin, ["trace"]).flatMap { try? JSONDecoder().decode(TraceData.self, from: $0) }
             await MainActor.run { if let n { self.net = n }; if let t { self.trace = t } }
