@@ -100,6 +100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.recordUse("aimon")
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventClass == AEEventClass(kCoreEventClass), event.eventID == AEEventID(kAEQuitApplication),
+              event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) == nil else { return .terminateNow }
+        window?.close()
+        return .terminateCancel
+    }
+
     func windowWillClose(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
     }

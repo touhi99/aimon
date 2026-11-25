@@ -51,6 +51,7 @@ Reasons behind rules in the code that names alone do not carry.
 ## Menu bar app
 
 - A second copy exits at launch with code 0, since it would add another menu bar item and repeat the log scanning. The LaunchAgent restarts the app only after a failure.
+- The window gives the app a Dock icon, so Quit from the Dock or the app switcher only closes the window; the LaunchAgent would not restart a clean exit. The power button and a Quit with a reason (logout, restart, shutdown) still quit.
 - A menu bar app gets no activation event, so opening the popover counts as a use of aimon.
 - With plan limits off or no Claude plan found, the menu bar shows spend (or tokens) instead of an empty ring.
 - Refreshes do not overlap and core commands run one after another, because each run scans logs and writes the same database.
